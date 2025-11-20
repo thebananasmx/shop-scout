@@ -166,6 +166,35 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                         <span className="text-xl font-bold text-slate-900">{scrapeResult.productCount}</span>
                     </div>
                 )}
+
+                {/* Last Product Preview */}
+                {scrapeResult.success && scrapeResult.lastProduct && (
+                    <div className="mt-4 p-4 border border-slate-200 rounded-xl bg-white shadow-sm animate-fade-in">
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Ejemplo de producto detectado</h4>
+                        <div className="flex gap-4">
+                            <div className="w-20 h-20 bg-slate-100 rounded-lg overflow-hidden flex-shrink-0">
+                                <img 
+                                    src={scrapeResult.lastProduct.image} 
+                                    alt={scrapeResult.lastProduct.name}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/80'; }}
+                                />
+                            </div>
+                            <div className="flex-grow overflow-hidden">
+                                <h5 className="text-sm font-bold text-slate-800 truncate">{scrapeResult.lastProduct.name}</h5>
+                                <p className="text-sm text-indigo-600 font-bold mb-2">{scrapeResult.lastProduct.price}</p>
+                                <a 
+                                    href={scrapeResult.lastProduct.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-md hover:bg-slate-700 transition-colors inline-block"
+                                >
+                                    Probar Link
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
           )}
         </div>

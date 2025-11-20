@@ -158,7 +158,8 @@ export const validateAndScrapeSite = async (domain: string): Promise<SiteScrapeR
                 siteName: data.siteName, 
                 productCount: data.productCount, 
                 success: true,
-                xml: data.xml
+                xml: data.xml,
+                lastProduct: data.lastProduct
             };
         }
     } 

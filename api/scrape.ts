@@ -14,6 +14,17 @@ const escapeXml = (unsafe: string) => {
   });
 };
 
+// Helper to resolve relative URLs to absolute
+const resolveUrl = (url: string, base: string) => {
+    if (!url) return '';
+    try {
+        return new URL(url, base).href;
+    } catch (e) {
+        // If it fails, return original (might already be absolute or data uri)
+        return url;
+    }
+};
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { url } = req.query;
 
@@ -56,13 +67,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     
                     if (type === 'Product' || type === 'ProductGroup') {
                         const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                        
+                        // Resolve URLs
+                        const productUrl = resolveUrl(node.url, targetUrl);
+                        const imageUrl = resolveUrl(Array.isArray(node.image) ? node.image[0] : (node.image || ''), targetUrl);
+
                         products.push({
                             name: node.name || 'Unknown Product',
                             description: node.description || '',
                             price: offer?.price || 'N/A',
                             currency: offer?.priceCurrency || 'USD',
-                            url: node.url || targetUrl,
-                            image: Array.isArray(node.image) ? node.image[0] : (node.image || '')
+                            url: productUrl || targetUrl,
+                            image: imageUrl
                         });
                     }
                 };
@@ -109,11 +125,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     </products>
 </catalog>`.trim();
 
+    // Prepare preview of the last product found
+    const lastItem = products[products.length - 1];
+    const lastProduct = lastItem ? {
+        name: lastItem.name,
+        price: `${lastItem.price} ${lastItem.currency}`,
+        image: lastItem.image,
+        link: lastItem.url
+    } : undefined;
+
     return res.status(200).json({
         success: true,
         siteName: new URL(targetUrl).hostname,
         productCount: products.length,
-        xml: xml
+        xml: xml,
+        lastProduct: lastProduct
     });
 
   } catch (error: any) {

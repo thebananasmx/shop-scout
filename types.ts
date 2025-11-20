@@ -34,4 +34,10 @@ export interface SiteScrapeResult {
   productCount: number; // Estimated or found count
   success: boolean;
   xml?: string; // The generated XML content
+  lastProduct?: {
+      name: string;
+      price: string;
+      image: string;
+      link: string;
+  };
 }
