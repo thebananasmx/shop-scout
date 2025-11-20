@@ -62,11 +62,10 @@ export const searchProducts = async (
       config: {
         systemInstruction: systemInstruction,
         tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
       }
     });
 
-    // The response should be JSON because of responseMimeType, but we'll be safe
+    // The response should be JSON because of the prompt, but we'll be safe
     let jsonText = response.text?.replace(/```json/g, "").replace(/```/g, "").trim() || "";
     const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
     if (jsonMatch) jsonText = jsonMatch[0];
