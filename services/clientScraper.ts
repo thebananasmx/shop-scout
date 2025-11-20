@@ -17,6 +17,7 @@ const escapeXml = (unsafe: string) => {
 // Helper to resolve absolute URLs
 const resolveUrl = (url: string, base: string) => {
     if (!url) return '';
+    if (url.startsWith('data:')) return ''; // Ignore data URIs
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
     if (url.startsWith('//')) return 'https:' + url;
     try {
@@ -30,17 +31,40 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
     if (!domain) return { siteName: '', productCount: 0, success: false };
 
     const targetUrl = domain.startsWith('http') ? domain : `https://${domain}`;
-    // Use corsproxy.io to bypass CORS and IP blocks often seen by Vercel
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
+    
+    // PROXY STRATEGY: Try multiple proxies in case one is blocked or down
+    const proxies = [
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+    ];
+
+    let html = '';
+    let activeProxy = '';
+
+    for (const proxyUrl of proxies) {
+        try {
+            console.log(`[ClientScraper] Trying proxy: ${proxyUrl}`);
+            const response = await fetch(proxyUrl);
+            if (response.ok) {
+                html = await response.text();
+                // Basic check to see if we got a real page or a proxy error page
+                if (html.length > 500 && !html.toLowerCase().includes("access denied")) {
+                    activeProxy = proxyUrl;
+                    break;
+                }
+            }
+        } catch (e) {
+            console.warn(`Proxy failed: ${proxyUrl}`, e);
+        }
+    }
+
+    if (!html) {
+        console.error("[ClientScraper] All proxies failed to fetch the content.");
+        return { siteName: domain, productCount: 0, success: false };
+    }
 
     try {
-        console.log(`[ClientScraper] Fetching ${targetUrl} via proxy...`);
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error(`Proxy Error: ${response.status}`);
-        
-        const html = await response.text();
-        
-        // Use Browser's Native DOM Parser - Much more powerful than Regex
+        // Use Browser's Native DOM Parser
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
 
@@ -52,7 +76,10 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
         const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
         scripts.forEach(script => {
             try {
-                const data = JSON.parse(script.textContent || '{}');
+                const content = script.textContent || '{}';
+                // Sanitation: Remove control characters that break JSON.parse
+                const cleanContent = content.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
+                const data = JSON.parse(cleanContent);
                 
                 const processNode = (node: any) => {
                     const type = Array.isArray(node['@type']) ? node['@type'][0] : node['@type'];
@@ -137,29 +164,37 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
                 // Deduplicate
                 if (seenUrls.has(absUrl)) return;
 
-                // Must contain an image to be considered a product card
+                // Must contain an image
                 const img = link.querySelector('img');
                 if (!img) return;
 
-                // Look for price-like text inside the link or immediately after
-                // We search for numbers with typical currency symbols
+                // Look for price-like text inside the link or parent
                 const linkText = link.innerText;
                 const parentText = link.parentElement?.innerText || '';
                 const combinedText = (linkText + " " + parentText).replace(/\s+/g, ' ');
                 
-                // Regex for price like $1,200.00 or 1200 MN
+                // Regex for price: $1,200.00, 1200 MN, €50
                 const priceMatch = combinedText.match(/[\$€£]\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)|(\d+)\s?MN/);
                 
                 if (priceMatch) {
                     // It looks like a product!
-                    const name = img.getAttribute('alt') || link.getAttribute('title') || linkText.trim() || 'Producto';
-                    const imgSrc = img.getAttribute('src') || img.getAttribute('data-src') || '';
+                    let name = img.getAttribute('alt') || link.getAttribute('title') || linkText.trim();
+                    // Cleanup name
+                    name = name.replace(/[\r\n]+/g, " ").trim();
+
+                    if (!name || name.length < 3) return;
+
+                    // Handle lazy loading src
+                    let imgSrc = img.getAttribute('src');
+                    if (!imgSrc || imgSrc.includes('data:image')) {
+                        imgSrc = img.getAttribute('data-src') || img.getAttribute('srcset')?.split(' ')[0] || '';
+                    }
                     
-                    if (name.length > 2 && imgSrc && !imgSrc.includes('data:image')) {
+                    if (imgSrc && !imgSrc.includes('data:image')) {
                         seenUrls.add(absUrl);
                         products.push({
                             name: name,
-                            price: priceMatch[0], // Take the whole match including symbol
+                            price: priceMatch[0], 
                             currency: '',
                             description: '',
                             url: absUrl,
@@ -172,6 +207,7 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
         }
 
         if (products.length === 0) {
+            console.warn("[ClientScraper] No products found with any strategy.");
             return {
                 success: false,
                 siteName: new URL(targetUrl).hostname,
@@ -179,8 +215,8 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
             };
         }
 
-        // Limit to 50 items to keep XML light
-        const limitedProducts = products.slice(0, 50);
+        // Limit to 60 items
+        const limitedProducts = products.slice(0, 60);
 
         const xml = `
 <catalog>
@@ -203,6 +239,7 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
 </catalog>`.trim();
 
         const lastItem = limitedProducts[limitedProducts.length - 1];
+        
         return {
             success: true,
             siteName: new URL(targetUrl).hostname,
@@ -217,7 +254,7 @@ export const scrapeSiteClientSide = async (domain: string, urlPattern?: string):
         };
 
     } catch (error) {
-        console.error("[ClientScraper] Error:", error);
+        console.error("[ClientScraper] Unexpected Error:", error);
         return { siteName: domain, productCount: 0, success: false };
     }
 };
