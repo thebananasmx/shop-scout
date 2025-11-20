@@ -11,6 +11,8 @@ const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
     ? product.imageUrl 
     : `https://picsum.photos/400/300?random=${Math.floor(Math.random() * 1000)}`;
 
+  const hasLink = product.link && product.link.trim().length > 0 && product.link !== '#';
+
   return (
     <div className="flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden w-full max-w-xs mb-4 transition-transform active:scale-[0.98]">
       <div className="relative h-48 w-full bg-slate-100 overflow-hidden">
@@ -43,14 +45,23 @@ const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
                 {product.source && <span className="text-xs text-slate-400 font-medium">{product.source}</span>}
             </div>
             
-            <a 
-            href={product.link} 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="block w-full text-center bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
-            >
-            Ver en Tienda
-            </a>
+            {hasLink ? (
+                <a 
+                href={product.link} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="block w-full text-center bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
+                >
+                Ver en Tienda
+                </a>
+            ) : (
+                <button 
+                    disabled
+                    className="block w-full text-center bg-slate-100 text-slate-400 text-sm font-medium py-2.5 rounded-lg cursor-not-allowed"
+                >
+                    Consultar disponibilidad
+                </button>
+            )}
         </div>
       </div>
     </div>

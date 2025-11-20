@@ -66,6 +66,12 @@ export const searchProducts = async (
   systemInstruction += `
     2. Analiza los resultados para encontrar los mejores productos (máximo 4).
     
+    REGLA CRÍTICA SOBRE LINKS:
+    - El campo "link" es OBLIGATORIO.
+    - Si la información proviene del XML, COPIA EXACTAMENTE el contenido de la etiqueta <link>.
+    - Si la información proviene de Google Search, usa la URL del resultado.
+    - Si NO encuentras un link válido para un producto, NO lo incluyas en la lista.
+
     FORMATO DE RESPUESTA (JSON RAW):
     Devuelve SOLAMENTE un objeto JSON válido.
     {
