@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AppSettings, SiteScrapeResult } from '../types';
+import { AppSettings, SiteScrapeResult, PatternMatchMode } from '../types';
 import { validateAndScrapeSite } from '../services/geminiService';
 
 interface ConfigurationViewProps {
@@ -17,11 +17,12 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
 }) => {
   const [domain, setDomain] = useState(currentSettings.targetDomain);
   const [urlPattern, setUrlPattern] = useState(currentSettings.urlPattern || '');
+  const [urlPatternMode, setUrlPatternMode] = useState<PatternMatchMode>(currentSettings.urlPatternMode || 'CONTAINS');
+  
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeProgress, setScrapeProgress] = useState(0);
   const [scrapeResult, setScrapeResult] = useState<SiteScrapeResult | null>(null);
 
-  // Function to create a temporary URL for the XML string and open it
   const handleViewXml = (xmlContent: string | undefined | null) => {
     if (!xmlContent) return;
     const blob = new Blob([xmlContent], { type: 'text/xml' });
@@ -36,7 +37,6 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
     setScrapeProgress(0);
     setScrapeResult(null);
 
-    // Visual progress simulation
     const interval = setInterval(() => {
       setScrapeProgress((prev) => {
         if (prev >= 85) return prev;
@@ -44,8 +44,7 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
       });
     }, 500);
 
-    // Call the Hybrid Service (Real API -> Fallback AI) with pattern
-    const result = await validateAndScrapeSite(domain, urlPattern);
+    const result = await validateAndScrapeSite(domain, urlPattern, urlPatternMode);
 
     clearInterval(interval);
     setScrapeProgress(100);
@@ -55,11 +54,11 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
       setScrapeResult(result);
       
       if (result.success) {
-        // Save everything
         onSave({ 
             ...currentSettings, 
             targetDomain: domain,
             urlPattern: urlPattern,
+            urlPatternMode: urlPatternMode,
             xmlCatalog: result.xml 
         });
       }
@@ -70,7 +69,8 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
     onSave({ 
       ...currentSettings, 
       targetDomain: domain,
-      urlPattern: urlPattern 
+      urlPattern: urlPattern,
+      urlPatternMode: urlPatternMode
     });
     onBack();
   };
@@ -92,16 +92,11 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
 
       <div className="flex-grow overflow-y-auto p-6 space-y-8">
         
-        {/* Target URL Section */}
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-bold text-slate-800 mb-1">
               URL del E-commerce
             </label>
-            <p className="text-xs text-slate-500 mb-3">
-              Define el sitio donde ShopScout creará el catálogo XML.
-            </p>
-            
             <input
               type="text"
               value={domain}
@@ -115,19 +110,35 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
               Patrón de URL de Producto (Opcional)
             </label>
             <p className="text-xs text-slate-500 mb-2">
-              Filtra enlaces que contengan este texto (ej. "/p/", "/producto/"). Útil para evitar blogs o categorías.
+              Filtra enlaces específicos (ej. "/p/", "/producto/").
             </p>
-            <input
-              type="text"
-              value={urlPattern}
-              onChange={(e) => setUrlPattern(e.target.value)}
-              placeholder="ej. /producto/"
-              disabled={isScraping}
-              className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-sm shadow-sm"
-            />
+            
+            <div className="flex gap-2">
+                <div className="w-1/3">
+                    <select
+                        value={urlPatternMode}
+                        onChange={(e) => setUrlPatternMode(e.target.value as PatternMatchMode)}
+                        disabled={isScraping}
+                        className="w-full px-2 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-100 text-xs font-medium text-slate-700 h-full"
+                    >
+                        <option value="CONTAINS">Contiene</option>
+                        <option value="STARTS_WITH">Empieza con</option>
+                        <option value="ENDS_WITH">Termina en</option>
+                    </select>
+                </div>
+                <div className="w-2/3">
+                    <input
+                    type="text"
+                    value={urlPattern}
+                    onChange={(e) => setUrlPattern(e.target.value)}
+                    placeholder="ej. /producto/"
+                    disabled={isScraping}
+                    className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-sm shadow-sm"
+                    />
+                </div>
+            </div>
           </div>
 
-          {/* Existing Catalog Indicator */}
           {!scrapeResult && currentSettings.xmlCatalog && (
              <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 p-3 rounded-xl mb-2">
                  <div className="flex items-center gap-2">
@@ -146,7 +157,6 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
              </div>
           )}
 
-          {/* Scraping Action */}
           <button 
             onClick={handleScrape}
             disabled={!domain || isScraping}
@@ -165,7 +175,6 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
              )}
           </button>
 
-          {/* Progress Bar */}
           {(isScraping || scrapeProgress > 0) && (
             <div className="space-y-2 animate-fade-in">
                 <div className="flex justify-between text-xs font-medium text-slate-600">
@@ -184,7 +193,6 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
             </div>
           )}
 
-          {/* Results Card */}
           {scrapeResult && !isScraping && (
             <div className={`p-5 rounded-xl border ${scrapeResult.success ? 'bg-green-50 border-green-100' : 'bg-amber-50 border-amber-100'} animate-fade-in`}>
                 <div className="flex items-center gap-3 mb-2">
@@ -220,7 +228,6 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                     </div>
                 )}
 
-                {/* Last Product Preview */}
                 {scrapeResult.success && scrapeResult.lastProduct && (
                     <div className="mt-4 p-4 border border-slate-200 rounded-xl bg-white shadow-sm animate-fade-in">
                         <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Ejemplo de producto detectado</h4>

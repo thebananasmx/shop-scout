@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { Product, SiteScrapeResult } from "../types";
+import { Product, SiteScrapeResult, PatternMatchMode } from "../types";
 import { loadCatalogXML, saveCatalogXML } from "./storageService";
 import { scrapeSiteClientSide } from "./clientScraper";
 
@@ -90,8 +90,11 @@ export const searchProducts = async (
   }
 };
 
-export const validateAndScrapeSite = async (domain: string, urlPattern?: string): Promise<SiteScrapeResult> => {
-  // Direct call to client scraper as backend is disabled for reliability
+export const validateAndScrapeSite = async (
+    domain: string, 
+    urlPattern?: string,
+    matchMode: PatternMatchMode = 'CONTAINS'
+): Promise<SiteScrapeResult> => {
   console.log("Initiating Client-Side Raw Scraper...");
-  return await scrapeSiteClientSide(domain, urlPattern);
+  return await scrapeSiteClientSide(domain, urlPattern, matchMode);
 };

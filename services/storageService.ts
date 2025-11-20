@@ -45,14 +45,16 @@ export const loadSettings = (): AppSettings => {
       targetDomain: '',
       useMockData: false,
       xmlCatalog: null,
-      urlPattern: ''
+      urlPattern: '',
+      urlPatternMode: 'CONTAINS'
     };
   } catch (e) {
     return { 
       targetDomain: '', 
       useMockData: false, 
       xmlCatalog: null,
-      urlPattern: '' 
+      urlPattern: '',
+      urlPatternMode: 'CONTAINS'
     };
   }
 };
