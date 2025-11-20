@@ -54,8 +54,9 @@ const App: React.FC = () => {
       sender: Sender.USER,
       timestamp: Date.now()
     };
-
-    setMessages(prev => [...prev, userMessage]);
+    
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setIsLoading(true);
 
     // Add placeholder loading message
@@ -68,8 +69,8 @@ const App: React.FC = () => {
       isLoading: true
     }]);
 
-    // Call Gemini Service
-    const result = await searchProducts(userText, settings.targetDomain);
+    // Call Gemini Service with the full conversation history
+    const result = await searchProducts(updatedMessages, settings.targetDomain);
 
     // Remove loading message and add actual response
     setMessages(prev => {

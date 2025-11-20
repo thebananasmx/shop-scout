@@ -1,68 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
-import { Product } from "../types";
+import { Product, Message, Sender } from "../types";
 
 const apiKey = process.env.API_KEY || ''; 
 const ai = new GoogleGenAI({ apiKey });
 
 /**
- * Clasifica una consulta de usuario como genérica o específica.
- * @param query La consulta del usuario.
- * @returns true si la consulta es genérica, false si es específica o en caso de error.
+ * Procesa una conversación, decide si buscar productos o pedir clarificación, y devuelve el resultado.
+ * @param messages El historial de mensajes de la conversación.
+ * @param targetDomain El dominio del e-commerce donde buscar.
+ * @returns Un objeto con el texto de respuesta y una lista de productos (si aplica).
  */
-const isQueryGeneric = async (query: string): Promise<boolean> => {
-  try {
-    const prompt = `Analiza la siguiente consulta de búsqueda de un usuario para un e-commerce: "${query}".
-    La consulta es:
-    A) Específica (contiene marca, modelo, tipo de producto claro, etc. - ej. "tenis Nike Air Max 270 para hombre", "laptop Dell XPS 15 con 16GB RAM").
-    B) Genérica (es demasiado amplia y se beneficiaría de más detalles - ej. "zapatos", "chamarras", "un regalo").
-
-    Responde SOLAMENTE con la letra "A" o "B".`;
-
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-    });
-    const resultText = response.text?.trim().toUpperCase();
-    return resultText === 'B';
-  } catch (error) {
-    console.error("Error en la clasificación de la consulta:", error);
-    // Falla de forma segura: asume que la consulta es específica si la clasificación falla
-    return false;
-  }
-};
-
-/**
- * Genera una pregunta para pedir al usuario más detalles sobre su búsqueda genérica.
- * @param query La consulta genérica original del usuario.
- * @returns Una pregunta de clarificación.
- */
-const generateClarifyingQuestion = async (query: string): Promise<string> => {
-    try {
-        const prompt = `Eres un asistente de compras servicial. El usuario ha hecho una búsqueda muy genérica: "${query}".
-Tu objetivo es ayudarle a acotar su búsqueda.
-Genera una pregunta amigable y útil que le pida más detalles para poder encontrar el producto perfecto.
-Ejemplos:
-- Si el usuario busca "chamarras", podrías preguntar: "¡Claro! Para darte mejores opciones, ¿buscas chamarra para hombre o mujer? ¿Para el frío, la lluvia o algo más casual?"
-- Si el usuario busca "regalo", podrías preguntar: "¡Excelente idea! ¿Para quién es el regalo y cuál es tu presupuesto aproximado?"
-- Si el usuario busca "celular", podrías preguntar: "Por supuesto. ¿Tienes alguna marca en mente o alguna característica importante como la cámara o la batería?"
-
-Responde SOLAMENTE con la pregunta que harías al usuario.`;
-        
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-        });
-        
-        return response.text?.trim() || `Tu búsqueda de "${query}" es un poco amplia. ¿Puedes darme más detalles?`;
-    } catch (error) {
-        console.error("Error generando la pregunta aclaratoria:", error);
-        return `Tu búsqueda de "${query}" es un poco amplia. ¿Podrías darme más detalles sobre lo que necesitas?`;
-    }
-};
-
-
 export const searchProducts = async (
-  query: string, 
+  messages: Message[], 
   targetDomain: string
 ): Promise<{ text: string, products: Product[] }> => {
 
@@ -80,80 +29,71 @@ export const searchProducts = async (
     }
   }
 
-  // Lógica de pre-clasificación de la consulta
-  const isGeneric = await isQueryGeneric(query);
-  if (isGeneric) {
-      const question = await generateClarifyingQuestion(query);
-      return { text: question, products: [] };
-  }
-
-  const searchContext = `Buscar "${query}" site:${targetDomain}`;
+  // Formatear el historial para la IA
+  const conversationHistory = messages.map(msg => 
+    `${msg.sender === Sender.USER ? 'Usuario' : 'Asistente'}: ${msg.text}`
+  ).join('\n');
 
   const systemInstruction = `
-    Eres ShopScout, un asistente experto en e-commerce que busca productos en tiempo real con MÁXIMA PRECISIÓN.
-    Tu tarea es buscar productos directamente en el sitio web especificado por el usuario usando tus herramientas de búsqueda.
-    DOMINIO OBJETIVO: ${targetDomain}
+    Eres ShopScout, un asistente experto en e-commerce que busca productos en tiempo real con MÁXIMA PRECISIÓN y mantiene una conversación natural.
+    Tu tarea es analizar el HISTORIAL DE CONVERSACIÓN para entender la intención completa del usuario.
+    DOMINIO OBJETIVO para buscar: ${targetDomain}
 
-    REGLAS DE MÁXIMA PRECISIÓN:
-    1.  **BÚSQUEDA EXCLUSIVA:** Limita TODA tu búsqueda al dominio: site:${targetDomain}. No busques en ningún otro sitio.
-    2.  **EXTRACCIÓN VERIFICADA:** Analiza las páginas de resultados para encontrar información REAL y VERIFICADA.
-        *   **Precio Real:** Extrae el precio exacto visible en la página del producto. Si no hay precio, déjalo como "No disponible".
-        *   **Imagen Real:** La 'imageUrl' DEBE ser la URL directa de la imagen principal del producto. No uses imágenes de baja calidad de los resultados de búsqueda. Asegúrate de que la URL sea pública y accesible.
-        *   **Enlace Directo (PDP):** El 'link' DEBE ser la URL directa a la página de detalles del producto (PDP), no a una categoría o lista de búsqueda.
-    3.  **NO INVENTAR:** Si no puedes verificar un dato (ej. precio, imagen), es mejor omitirlo o indicarlo como no disponible. No inventes información.
-    4.  **RELEVANCIA:** Prioriza siempre los productos que mejor coincidan con la búsqueda del usuario. Si no encuentras el producto exacto, menciona productos similares que sí encontraste.
+    PROCESO DE DECISIÓN:
+    1.  **ANALIZA EL HISTORIAL:** Lee todo el historial para sintetizar lo que el usuario realmente quiere. Ej: Si el usuario dice "chamarras" y luego "para hombre", tu búsqueda interna debe ser "chamarras para hombre".
+    2.  **DECIDE LA ACCIÓN:**
+        *   **SI LA INTENCIÓN ES CLARA (contiene producto, tipo, marca, etc.):** Realiza la búsqueda de productos. Tu respuesta DEBE ser el formato JSON.
+        *   **SI LA INTENCIÓN ES VAGA (ej. "zapatos", "un regalo", o una respuesta a una pregunta tuya que aún es muy general):** NO busques. En su lugar, haz una pregunta de clarificación para obtener más detalles. Tu respuesta DEBE ser TEXTO PLANO con la pregunta.
 
-    REGLAS DE INTERACCIÓN:
-    1.  **LIMITAR RESULTADOS:** Limita la lista de \`products\` a un MÁXIMO de 5 resultados, incluso si encuentras más.
-    2.  **OFRECER MÁS:** Si encontraste más de 5 productos, menciónalo en tu \`summary\` e invita al usuario a pedir más. Por ejemplo: 'Encontré varios modelos. Aquí están los 5 más relevantes. ¿Quieres que te muestre los siguientes?'.
-    3.  **CLARIDAD:** Si el sitio no tiene el producto, indícalo claramente.
+    REGLAS DE BÚSQUEDA (solo si la acción es buscar):
+    1.  **BÚSQUEDA EXCLUSIVA:** Limita TODA tu búsqueda al dominio: site:${targetDomain}.
+    2.  **EXTRACCIÓN VERIFICADA:** El 'link' DEBE ser la URL directa a la página del producto (PDP). La 'imageUrl' DEBE ser la URL de la imagen principal del producto. El 'price' DEBE ser el precio real y visible en esa página.
+    3.  **NO INVENTAR:** Si no puedes verificar un dato, indícalo como "No disponible".
+    4.  **LÍMITE:** Devuelve un MÁXIMO de 5 productos. Si encuentras más, menciónalo en el 'summary'.
 
-    FORMATO DE RESPUESTA (JSON RAW):
-    Devuelve SOLAMENTE un objeto JSON válido.
-    {
-      "summary": "Texto resumen de tu hallazgo, sé amigable y conversacional.",
-      "products": [
+    FORMATO DE RESPUESTA:
+    *   **CASO BÚSQUEDA EXITOSA (JSON RAW):**
         {
-          "name": "Nombre EXACTO del Producto Encontrado",
-          "price": "Precio con moneda (ej. '$1,299.00 MXN') o 'No disponible'",
-          "description": "Breve descripción oficial del producto",
-          "imageUrl": "URL de la imagen principal del producto (verificada)",
-          "link": "URL EXACTA y directa a la página del producto (verificada)",
-          "inStock": true,
-          "source": "${targetDomain}"
+          "summary": "Texto resumen de tu hallazgo.",
+          "products": [{"name": "...", "price": "...", "description": "...", "imageUrl": "...", "link": "...", "inStock": true, "source": "${targetDomain}"}]
         }
-      ]
-    }
+    *   **CASO PREGUNTA DE CLARIFICACIÓN (TEXTO PLANO):**
+        Ej: ¡Claro! Para darte mejores opciones, ¿buscas chamarra para hombre o mujer? ¿Para el frío, la lluvia o algo más casual?
   `;
 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: searchContext,
+      contents: `HISTORIAL DE CONVERSACIÓN:\n${conversationHistory}`,
       config: {
         systemInstruction: systemInstruction,
         tools: [{ googleSearch: {} }],
       }
     });
 
-    // The response should be JSON because of the prompt, but we'll be safe
-    let jsonText = response.text?.replace(/```json/g, "").replace(/```/g, "").trim() || "";
-    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) jsonText = jsonMatch[0];
+    const responseText = response.text?.trim() || "";
 
-    const parsed = JSON.parse(jsonText);
-    
-    return {
-      text: parsed.summary || "Aquí están los resultados que encontré en vivo para ti:",
-      products: parsed.products || []
-    };
+    // Intenta analizar la respuesta como JSON. Si falla, es una pregunta de clarificación.
+    try {
+      // Intenta encontrar un bloque JSON, incluso si hay texto antes o después.
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        // No hay JSON, es una respuesta conversacional.
+        return { text: responseText, products: [] };
+      }
+      
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        text: parsed.summary || "Aquí están los resultados que encontré:",
+        products: parsed.products || []
+      };
+    } catch (e) {
+      // El análisis falló, lo que significa que la respuesta de la IA fue una pregunta o un texto simple.
+      return { text: responseText, products: [] };
+    }
 
   } catch (error) {
     console.error("Gemini API Error:", error);
-    const errorMessage = "Hubo un error al buscar en el sitio. Puede que el sitio esté bloqueando el acceso o que no se haya encontrado una respuesta válida. Intenta con otra búsqueda.";
-    if (error instanceof Error && error.message.includes('json')) {
-         return { text: `${errorMessage} (El formato de respuesta no fue JSON válido.)`, products: [] };
-    }
-    return { text: errorMessage, products: [] };
+    return { text: "Hubo un error al comunicarme con el asistente. Por favor, intenta de nuevo.", products: [] };
   }
 };
