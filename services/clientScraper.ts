@@ -1,8 +1,9 @@
 import { SiteScrapeResult } from '../types';
 
-// Helper to escape XML characters
+// Helper to escape XML characters strictly for XML validity
 const escapeXml = (unsafe: string) => {
-  return unsafe.replace(/[<>&'"]/g, (c) => {
+  if (!unsafe) return '';
+  return String(unsafe).replace(/[<>&'"]/g, (c) => {
     switch (c) {
       case '<': return '&lt;';
       case '>': return '&gt;';
@@ -14,247 +15,218 @@ const escapeXml = (unsafe: string) => {
   });
 };
 
-// Helper to resolve absolute URLs
-const resolveUrl = (url: string, base: string) => {
-    if (!url) return '';
-    if (url.startsWith('data:')) return ''; // Ignore data URIs
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    if (url.startsWith('//')) return 'https:' + url;
-    try {
-        return new URL(url, base).href;
-    } catch (e) {
-        return url;
-    }
+// Helper to resolve absolute URLs via simple string concatenation
+// Avoids URL() object strictness which can break some partial URLs
+const resolveUrlRaw = (href: string, baseUrl: string): string => {
+    if (!href) return '';
+    href = href.trim();
+    if (href.startsWith('http://') || href.startsWith('https://')) return href;
+    if (href.startsWith('//')) return 'https:' + href;
+    
+    // Remove trailing slash from base if present
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    // Ensure href starts with /
+    const cleanHref = href.startsWith('/') ? href : '/' + href;
+    
+    return cleanBase + cleanHref;
 };
 
 export const scrapeSiteClientSide = async (domain: string, urlPattern?: string): Promise<SiteScrapeResult> => {
-    if (!domain) return { siteName: '', productCount: 0, success: false };
-
-    const targetUrl = domain.startsWith('http') ? domain : `https://${domain}`;
+    // 1. Setup URL
+    let baseUrl = domain.startsWith('http') ? domain : `https://${domain}`;
+    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1); // Normalize base
     
-    // PROXY STRATEGY: Try multiple proxies in case one is blocked or down
+    console.log(`[ClientScraper] Starting Raw Crawl for: ${baseUrl} with pattern: ${urlPattern || 'NONE'}`);
+
+    // 2. Proxies (Try multiple to ensure we get HTML)
     const proxies = [
-        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(baseUrl)}`,
+        `https://corsproxy.io/?${encodeURIComponent(baseUrl)}`
     ];
 
     let html = '';
-    let activeProxy = '';
-
-    for (const proxyUrl of proxies) {
+    for (const proxy of proxies) {
         try {
-            console.log(`[ClientScraper] Trying proxy: ${proxyUrl}`);
-            const response = await fetch(proxyUrl);
-            if (response.ok) {
-                html = await response.text();
-                // Basic check to see if we got a real page or a proxy error page
-                if (html.length > 500 && !html.toLowerCase().includes("access denied")) {
-                    activeProxy = proxyUrl;
-                    break;
-                }
+            console.log(`[ClientScraper] Fetching via: ${proxy}`);
+            const res = await fetch(proxy);
+            if (res.ok) {
+                html = await res.text();
+                // Verify we got something substantial
+                if (html.length > 1000) break;
             }
-        } catch (e) {
-            console.warn(`Proxy failed: ${proxyUrl}`, e);
+        } catch (e) { 
+            console.warn('Proxy failed', e); 
         }
     }
 
     if (!html) {
-        console.error("[ClientScraper] All proxies failed to fetch the content.");
-        return { siteName: domain, productCount: 0, success: false };
+        console.error("[ClientScraper] Failed to fetch HTML from any proxy.");
+        return { success: false, siteName: domain, productCount: 0 };
     }
 
-    try {
-        // Use Browser's Native DOM Parser
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
+    // 3. RAW PARSING (Maximum Permissiveness)
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const seen = new Set<string>();
+    const products: any[] = [];
 
-        let products: any[] = [];
-        const seenUrls = new Set<string>();
-        const filterPattern = urlPattern || null;
+    // Get ALL Links in the document
+    const links = Array.from(doc.querySelectorAll('a'));
+    console.log(`[ClientScraper] Found ${links.length} total links. Filtering...`);
 
-        // STRATEGY 1: JSON-LD (Structured Data - Best Quality)
-        const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
-        scripts.forEach(script => {
-            try {
-                const content = script.textContent || '{}';
-                // Sanitation: Remove control characters that break JSON.parse
-                const cleanContent = content.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
-                const data = JSON.parse(cleanContent);
-                
-                const processNode = (node: any) => {
-                    const type = Array.isArray(node['@type']) ? node['@type'][0] : node['@type'];
-                    if (type === 'Product' || type === 'ProductGroup') {
-                        
-                        // URL logic
-                        let rawUrl = node.url;
-                        if (node.offers) {
-                            const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-                            if (offer && offer.url) rawUrl = offer.url;
-                        }
-                        if (!rawUrl) return; // Strict: No URL, no product
+    for (const link of links) {
+        const rawHref = link.getAttribute('href');
+        
+        // Basic sanity check to skip anchors/scripts
+        if (!rawHref || rawHref.length < 2 || rawHref.startsWith('#') || rawHref.startsWith('javascript') || rawHref.startsWith('mailto')) continue;
 
-                        const absUrl = resolveUrl(rawUrl, targetUrl);
-                        
-                        if (filterPattern && !absUrl.includes(filterPattern)) return;
-                        if (seenUrls.has(absUrl)) return;
-                        
-                        const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-                        const price = offer?.price || offer?.highPrice || 'N/A';
-                        const image = resolveUrl(Array.isArray(node.image) ? node.image[0] : (node.image || ''), targetUrl);
+        const absUrl = resolveUrlRaw(rawHref, baseUrl);
 
-                        seenUrls.add(absUrl);
-                        products.push({
-                            name: node.name,
-                            price: price,
-                            currency: offer?.priceCurrency || '',
-                            description: node.description || '',
-                            url: absUrl,
-                            image: image,
-                            source: 'json-ld'
-                        });
-                    }
-                };
+        // --- FILTER LOGIC ---
+        
+        // A. URL PATTERN (High Priority)
+        // If user provided "/p/", we take EVERYTHING that has "/p/"
+        if (urlPattern) {
+            if (!absUrl.includes(urlPattern)) continue;
+        } 
+        // B. NO PATTERN (Visual Heuristic)
+        // If no pattern, we need to be smart to avoid grabbing "Home", "Contact", etc.
+        else {
+            const lower = absUrl.toLowerCase();
+            // Skip common non-product pages
+            if (lower === baseUrl || lower === baseUrl + '/' || lower.includes('login') || lower.includes('cart') || lower.includes('account') || lower.includes('contact')) continue;
+        }
 
-                if (Array.isArray(data)) data.forEach(processNode);
-                else processNode(data);
-                if (data['@graph']) data['@graph'].forEach(processNode);
+        if (seen.has(absUrl)) continue;
 
-            } catch (e) { /* ignore json error */ }
-        });
+        // --- EXTRACTION LOGIC ---
+        
+        // 1. Image
+        // Look for image inside the link
+        let img = link.querySelector('img');
+        let imgSrc = img?.getAttribute('src') || img?.getAttribute('data-src') || img?.getAttribute('srcset')?.split(' ')[0] || '';
+        
+        // 2. Name
+        // Alt text -> Title attribute -> Inner Text
+        let name = img?.getAttribute('alt') || link.getAttribute('title') || link.innerText || '';
+        name = name.replace(/[\r\n\t]+/g, " ").trim();
+        
+        // 3. Price
+        // Look for currency symbol in the link's text or parent's text
+        const linkText = link.innerText;
+        const parentText = link.parentElement?.innerText || '';
+        const combinedText = (linkText + " " + parentText).replace(/\s+/g, ' ');
+        const priceMatch = combinedText.match(/[$€£]\s?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/) || combinedText.match(/(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s?(USD|MXN|MN|EUR)/);
+        
+        let price = priceMatch ? priceMatch[0] : 'Ver en tienda';
 
-        // STRATEGY 2: OpenGraph (If Single Product Page)
-        if (products.length === 0) {
-            const ogType = doc.querySelector('meta[property="og:type"]')?.getAttribute('content');
-            if (ogType === 'product') {
-                const title = doc.querySelector('meta[property="og:title"]')?.getAttribute('content');
-                const image = doc.querySelector('meta[property="og:image"]')?.getAttribute('content');
-                const url = doc.querySelector('meta[property="og:url"]')?.getAttribute('content') || targetUrl;
-                const price = doc.querySelector('meta[property="product:price:amount"]')?.getAttribute('content');
-                const currency = doc.querySelector('meta[property="product:price:currency"]')?.getAttribute('content');
-
-                if (title && price) {
-                    products.push({
-                        name: title,
-                        price: price,
-                        currency: currency || '',
-                        description: '',
-                        url: resolveUrl(url, targetUrl),
-                        image: resolveUrl(image || '', targetUrl),
-                        source: 'opengraph'
-                    });
-                }
+        // --- DECISION TO KEEP ---
+        
+        if (urlPattern) {
+            // If it matches the pattern, we keep it even if image/name are weak.
+            // We try to fill missing data with placeholders.
+            seen.add(absUrl);
+            products.push({
+                name: name || 'Producto (Sin nombre detectado)',
+                price: price,
+                url: absUrl,
+                image: resolveUrlRaw(imgSrc, baseUrl),
+                description: ''
+            });
+        } else {
+            // If no pattern, we enforce Image + Name > 3 chars to ensure quality
+            if (imgSrc && name.length > 3) {
+                seen.add(absUrl);
+                products.push({
+                    name: name,
+                    price: price,
+                    url: absUrl,
+                    image: resolveUrlRaw(imgSrc, baseUrl),
+                    description: ''
+                });
             }
         }
+    }
 
-        // STRATEGY 3: DOM Heuristic (Visual Scraper for Listing Pages)
-        // Looks for <a> tags that contain an <img> and resemble a product card
-        if (products.length === 0) {
-            console.log("[ClientScraper] Fallback to DOM Heuristic scan...");
-            const links = doc.querySelectorAll('a');
-            
-            links.forEach(link => {
-                const href = link.getAttribute('href');
-                if (!href || href === '#' || href.startsWith('javascript:')) return;
+    // 4. JSON-LD Backup (Merge results)
+    // We still check JSON-LD because it's the highest quality data if available.
+    try {
+        const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+        scripts.forEach(script => {
+            const content = script.textContent || '{}';
+            const data = JSON.parse(content);
+            const process = (node: any) => {
+                if ((node['@type'] === 'Product' || node['@type'] === 'ProductGroup') && node.name) {
+                    // Try to get URL
+                    let u = node.url || (node.offers && node.offers[0]?.url);
+                    if (u) {
+                        const fullU = resolveUrlRaw(u, baseUrl);
+                        if (urlPattern && !fullU.includes(urlPattern)) return; // Respect pattern
+                        
+                        if (!seen.has(fullU)) {
+                            seen.add(fullU);
+                            // Try to get Image
+                            let i = node.image;
+                            if (Array.isArray(i)) i = i[0];
+                            if (typeof i === 'object') i = i.url;
+                            
+                            // Try to get Price
+                            let p = 'Ver en tienda';
+                            if (node.offers) {
+                                const o = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                                if (o.price) p = o.price + (o.priceCurrency ? ' ' + o.priceCurrency : '');
+                            }
 
-                const absUrl = resolveUrl(href, targetUrl);
-
-                // Apply User Pattern Filter Strict
-                if (filterPattern && !absUrl.includes(filterPattern)) return;
-                
-                // Deduplicate
-                if (seenUrls.has(absUrl)) return;
-
-                // Must contain an image
-                const img = link.querySelector('img');
-                if (!img) return;
-
-                // Look for price-like text inside the link or parent
-                const linkText = link.innerText;
-                const parentText = link.parentElement?.innerText || '';
-                const combinedText = (linkText + " " + parentText).replace(/\s+/g, ' ');
-                
-                // Regex for price: $1,200.00, 1200 MN, €50
-                const priceMatch = combinedText.match(/[\$€£]\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)|(\d+)\s?MN/);
-                
-                if (priceMatch) {
-                    // It looks like a product!
-                    let name = img.getAttribute('alt') || link.getAttribute('title') || linkText.trim();
-                    // Cleanup name
-                    name = name.replace(/[\r\n]+/g, " ").trim();
-
-                    if (!name || name.length < 3) return;
-
-                    // Handle lazy loading src
-                    let imgSrc = img.getAttribute('src');
-                    if (!imgSrc || imgSrc.includes('data:image')) {
-                        imgSrc = img.getAttribute('data-src') || img.getAttribute('srcset')?.split(' ')[0] || '';
-                    }
-                    
-                    if (imgSrc && !imgSrc.includes('data:image')) {
-                        seenUrls.add(absUrl);
-                        products.push({
-                            name: name,
-                            price: priceMatch[0], 
-                            currency: '',
-                            description: '',
-                            url: absUrl,
-                            image: resolveUrl(imgSrc, targetUrl),
-                            source: 'dom-heuristic'
-                        });
+                            products.unshift({ // Add to top as it's high quality
+                                name: node.name,
+                                price: p,
+                                url: fullU,
+                                image: resolveUrlRaw(i || '', baseUrl),
+                                description: node.description || ''
+                            });
+                        }
                     }
                 }
-            });
-        }
-
-        if (products.length === 0) {
-            console.warn("[ClientScraper] No products found with any strategy.");
-            return {
-                success: false,
-                siteName: new URL(targetUrl).hostname,
-                productCount: 0
             };
-        }
+            if (Array.isArray(data)) data.forEach(process);
+            else process(data);
+            if (data['@graph']) data['@graph'].forEach(process);
+        });
+    } catch(e) {}
 
-        // Limit to 60 items
-        const limitedProducts = products.slice(0, 60);
+    console.log(`[ClientScraper] Extracted ${products.length} potential products.`);
 
-        const xml = `
+    if (products.length === 0) {
+        return { success: false, siteName: domain, productCount: 0 };
+    }
+
+    // Limit XML size
+    const limited = products.slice(0, 80);
+
+    const xml = `
 <catalog>
-    <meta>
-        <source>${escapeXml(targetUrl)}</source>
-        <scraped_at>${new Date().toISOString()}</scraped_at>
-        <method>client-hybrid</method>
-    </meta>
-    <products>
-        ${limitedProducts.map(p => `
-        <product>
-            <name>${escapeXml(p.name)}</name>
-            <price currency="${escapeXml(p.currency)}">${escapeXml(String(p.price))}</price>
-            <description>${escapeXml(p.description.substring(0, 300))}</description>
-            <link>${escapeXml(p.url)}</link>
-            <image>${escapeXml(p.image)}</image>
-        </product>
-        `).join('')}
-    </products>
+<meta><source>${escapeXml(baseUrl)}</source></meta>
+<products>
+${limited.map(p => `
+<product>
+<name>${escapeXml(p.name)}</name>
+<price>${escapeXml(p.price)}</price>
+<link>${escapeXml(p.url)}</link>
+<image>${escapeXml(p.image)}</image>
+</product>`).join('')}
+</products>
 </catalog>`.trim();
 
-        const lastItem = limitedProducts[limitedProducts.length - 1];
-        
-        return {
-            success: true,
-            siteName: new URL(targetUrl).hostname,
-            productCount: limitedProducts.length,
-            xml: xml,
-            lastProduct: lastItem ? {
-                name: lastItem.name,
-                price: `${lastItem.price} ${lastItem.currency}`,
-                image: lastItem.image,
-                link: lastItem.url
-            } : undefined
-        };
-
-    } catch (error) {
-        console.error("[ClientScraper] Unexpected Error:", error);
-        return { siteName: domain, productCount: 0, success: false };
-    }
+    return {
+        success: true,
+        siteName: new URL(baseUrl).hostname,
+        productCount: limited.length,
+        xml: xml,
+        lastProduct: limited[limited.length - 1] ? {
+            name: limited[limited.length - 1].name,
+            price: limited[limited.length - 1].price,
+            image: limited[limited.length - 1].image,
+            link: limited[limited.length - 1].url
+        } : undefined
+    };
 };
