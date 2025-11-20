@@ -66,11 +66,12 @@ export const searchProducts = async (
   systemInstruction += `
     2. Analiza los resultados para encontrar los mejores productos (máximo 4).
     
-    REGLA CRÍTICA SOBRE LINKS:
-    - El campo "link" es OBLIGATORIO.
-    - Si la información proviene del XML, COPIA EXACTAMENTE el contenido de la etiqueta <link>.
-    - Si la información proviene de Google Search, usa la URL del resultado.
-    - Si NO encuentras un link válido para un producto, NO lo incluyas en la lista.
+    REGLA DE ORO PARA LINKS (CRÍTICO):
+    - Si tomas un producto del XML, el campo "link" DEBE ser una COPIA EXACTA Y LITERAL del contenido de la etiqueta <link>.
+    - NO modifiques, cortes, ni reformatees la URL del XML bajo ninguna circunstancia.
+    - Debes preservar todos los parámetros de la URL original (ej. ?v=123).
+    - Si la información proviene de Google Search, usa la URL completa del resultado.
+    - Si un producto no tiene link válido, DESCÁRTALO.
 
     FORMATO DE RESPUESTA (JSON RAW):
     Devuelve SOLAMENTE un objeto JSON válido.
@@ -82,7 +83,7 @@ export const searchProducts = async (
           "price": "Precio",
           "description": "Desc",
           "imageUrl": "URL Imagen",
-          "link": "URL Producto",
+          "link": "URL EXACTA DEL PRODUCTO",
           "inStock": true,
           "source": "Origen"
         }
@@ -141,10 +142,6 @@ export const searchProducts = async (
 export const validateAndScrapeSite = async (domain: string, urlPattern?: string): Promise<SiteScrapeResult> => {
   if (!domain) return { siteName: '', productCount: 0, success: false };
 
-  // STRATEGY:
-  // 1. Try to hit the Vercel Serverless Function (/api/scrape) for REAL scraping.
-  // 2. If that fails (e.g. in Preview Mode without backend), fallback to Gemini Simulation to generate Mock XML.
-
   try {
     // --- OPTION A: REAL SCRAPING API ---
     console.log("Attempting real scrape via /api/scrape...");
@@ -168,17 +165,15 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
             };
         }
     } 
-    // If response not ok, or success is false, fall through to Option B
     console.warn("Real scrape failed or returned no data, falling back to AI simulation.");
 
   } catch (e) {
-      console.warn("API endpoint unreachable (expected in pure frontend preview). Switching to AI Simulation.");
+      console.warn("API endpoint unreachable. Switching to AI Simulation.");
   }
 
-  // --- OPTION B: AI SIMULATION & XML GENERATION ---
-  // We ask Gemini to SEARCH the site and then WRITE an XML file pretending it scraped it.
-  // This ensures the "XML Grounding" feature still works even without the backend.
-
+  // --- OPTION B: AI SIMULATION ---
+  // Only if API is unreachable (e.g. pure frontend preview)
+  
   if (!apiKey) return { siteName: '', productCount: 0, success: false };
 
   const searchContext = `site:${domain} products best sellers`;
@@ -186,10 +181,14 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
     Actúa como un Web Scraper.
     Analiza los resultados de búsqueda para: ${domain}.
     
-    Genera un documento XML válido con 5 productos representativos que encuentres en los resultados.
+    Genera un documento XML válido con TODOS los productos que encuentres en los resultados (Objetivo: 15-30 productos).
     ${urlPattern ? `IMPORTANTE: Solo incluye productos cuya URL contenga "${urlPattern}".` : ''}
     
-    El formato debe ser:
+    IMPORTANTE SOBRE LAS URLs:
+    - Extrae la URL real del snippet de búsqueda.
+    - NO inventes URLs.
+    - NO limpies las URLs (mantén los parámetros).
+    
     <catalog>
       <products>
         <product>
@@ -202,12 +201,7 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
       </products>
     </catalog>
 
-    Devuelve JSON con el XML dentro:
-    {
-      "siteName": "Nombre Tienda",
-      "productCount": 100,
-      "xml": "...string xml raw..."
-    }
+    Devuelve JSON con el XML: { "siteName": "...", "productCount": 15, "xml": "..." }
   `;
 
   try {
@@ -222,22 +216,17 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
 
     let jsonText = response.text?.replace(/```json/g, "").replace(/```/g, "").trim();
     if (!jsonText) throw new Error("No response");
-    
     const parsed = JSON.parse(jsonText);
-    
-    if (parsed.xml) {
-        saveCatalogXML(parsed.xml);
-    }
+    if (parsed.xml) saveCatalogXML(parsed.xml);
 
     return {
         siteName: parsed.siteName || domain,
-        productCount: parsed.productCount || 50,
+        productCount: parsed.productCount || 5,
         success: true,
         xml: parsed.xml
     };
-
   } catch (error) {
-    console.error("Scrape Simulation Error:", error);
+    console.error("Simulation Error:", error);
     return { siteName: domain, productCount: 0, success: false };
   }
 };

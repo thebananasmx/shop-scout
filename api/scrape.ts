@@ -15,12 +15,17 @@ const escapeXml = (unsafe: string) => {
 };
 
 // Helper to resolve relative URLs to absolute
+// UPDATED: Returns raw string if already absolute to prevent "cleaning"
 const resolveUrl = (url: string, base: string) => {
     if (!url) return '';
+    // If it's already absolute, return it EXACTLY as is. 
+    // Do not use new URL() which might normalize paths or encoding.
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+        return url;
+    }
     try {
         return new URL(url, base).href;
     } catch (e) {
-        // If it fails, return original (might already be absolute or data uri)
         return url;
     }
 };
@@ -56,6 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const jsonLdMatches = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi);
     
     let products: any[] = [];
+    const seenUrls = new Set<string>(); // To prevent duplicates
 
     if (jsonLdMatches) {
         jsonLdMatches.forEach(script => {
@@ -67,24 +73,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     const type = Array.isArray(node['@type']) ? node['@type'][0] : node['@type'];
                     
                     if (type === 'Product' || type === 'ProductGroup') {
-                        const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                        // Smart URL Extraction: Check multiple places
+                        let rawUrl = node.url;
                         
-                        // Resolve URLs
-                        const productUrl = resolveUrl(node.url, targetUrl);
-                        const imageUrl = resolveUrl(Array.isArray(node.image) ? node.image[0] : (node.image || ''), targetUrl);
+                        // Fallback: Check inside offers (common in Shopify/WooCommerce for variants)
+                        if (!rawUrl && node.offers) {
+                            const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                            if (offer && offer.url) {
+                                rawUrl = offer.url;
+                            }
+                        }
 
-                        // STRICT FILTERING
+                        // Fallback: Check mainEntityOfPage
+                        if (!rawUrl && typeof node.mainEntityOfPage === 'string') {
+                            rawUrl = node.mainEntityOfPage;
+                        }
+
+                        // Resolve to absolute URL (Preserving RAW if absolute)
+                        const productUrl = resolveUrl(rawUrl, targetUrl);
+
+                        // --- STRICT FILTERING & VALIDATION ---
                         
-                        // 1. Must have a valid URL specific to the product (not just the homepage)
+                        // 1. Must be a valid string and distinct from base
                         if (!productUrl || productUrl === targetUrl) return;
 
-                        // 2. If pattern provided, must match
+                        // 2. Pattern matching (if configured)
                         if (filterPattern && !productUrl.includes(filterPattern)) return;
+
+                        // 3. Deduplication
+                        if (seenUrls.has(productUrl)) return;
+                        seenUrls.add(productUrl);
+
+                        // Price extraction
+                        const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                        const price = offer?.price || offer?.highPrice || 'N/A'; // Handle ranges if needed
+
+                        // Image extraction
+                        const imageUrl = resolveUrl(Array.isArray(node.image) ? node.image[0] : (node.image || ''), targetUrl);
 
                         products.push({
                             name: node.name || 'Unknown Product',
                             description: node.description || '',
-                            price: offer?.price || 'N/A',
+                            price: price,
                             currency: offer?.priceCurrency || 'USD',
                             url: productUrl,
                             image: imageUrl
@@ -114,6 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
     }
 
+    // We use escapeXml to ensure the XML is valid, but we trust the URL we extracted.
     const xml = `
 <catalog>
     <meta>

@@ -21,6 +21,14 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
   const [scrapeProgress, setScrapeProgress] = useState(0);
   const [scrapeResult, setScrapeResult] = useState<SiteScrapeResult | null>(null);
 
+  // Function to create a temporary URL for the XML string and open it
+  const handleViewXml = (xmlContent: string | undefined | null) => {
+    if (!xmlContent) return;
+    const blob = new Blob([xmlContent], { type: 'text/xml' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  };
+
   const handleScrape = async () => {
     if (!domain) return;
 
@@ -119,6 +127,25 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
             />
           </div>
 
+          {/* Existing Catalog Indicator */}
+          {!scrapeResult && currentSettings.xmlCatalog && (
+             <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 p-3 rounded-xl mb-2">
+                 <div className="flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-indigo-600">
+                        <path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0016.5 9h-1.875a1.875 1.875 0 01-1.875-1.875V5.25A3.75 3.75 0 009 1.5H5.625z" />
+                        <path d="M12.971 1.816A5.23 5.23 0 0114.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 013.434 1.279 9.768 9.768 0 00-6.963-6.963z" />
+                    </svg>
+                    <span className="text-sm font-medium text-indigo-900">Catálogo XML Guardado</span>
+                 </div>
+                 <button 
+                    onClick={() => handleViewXml(currentSettings.xmlCatalog)}
+                    className="text-xs font-bold text-indigo-600 hover:underline"
+                 >
+                    Ver XML Raw
+                 </button>
+             </div>
+          )}
+
           {/* Scraping Action */}
           <button 
             onClick={handleScrape}
@@ -181,7 +208,15 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                 {scrapeResult.success && (
                     <div className="mt-3 bg-white/60 p-3 rounded-lg flex justify-between items-center">
                         <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Items en XML</span>
-                        <span className="text-xl font-bold text-slate-900">{scrapeResult.productCount}</span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-xl font-bold text-slate-900">{scrapeResult.productCount}</span>
+                            <button 
+                                onClick={() => handleViewXml(scrapeResult.xml)}
+                                className="text-xs bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md font-bold hover:bg-indigo-200 transition-colors"
+                            >
+                                Ver XML Raw
+                            </button>
+                        </div>
                     </div>
                 )}
 
