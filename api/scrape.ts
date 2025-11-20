@@ -40,19 +40,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const filterPattern = typeof pattern === 'string' ? pattern : null;
 
   try {
-    // 1. Normalize URL
+    // 1. Normalize Target URL
     const targetUrl = url.startsWith('http') ? url : `https://${url}`;
     
-    // 2. Fetch HTML (Real Request)
+    // 2. Fetch HTML (Real Request pretending to be Chrome)
     const response = await fetch(targetUrl, {
         headers: { 
-            'User-Agent': 'ShopScout-Bot/1.0 (Educational AI Assistant)',
-            'Accept': 'text/html'
+            // Spoof Real Browser to avoid blocking and get full JSON-LD
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
+            'Cache-Control': 'no-cache'
         }
     });
     
     if (!response.ok) {
-        throw new Error(`Failed to fetch site: ${response.statusText}`);
+        throw new Error(`Failed to fetch site: ${response.status} ${response.statusText}`);
     }
 
     const html = await response.text();
@@ -73,18 +76,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     const type = Array.isArray(node['@type']) ? node['@type'][0] : node['@type'];
                     
                     if (type === 'Product' || type === 'ProductGroup') {
-                        // Smart URL Extraction: Check multiple places
-                        let rawUrl = node.url;
+                        // Smart URL Extraction: Priority to specific offer/variant URL
+                        let rawUrl = '';
                         
-                        // Fallback: Check inside offers (common in Shopify/WooCommerce for variants)
-                        if (!rawUrl && node.offers) {
+                        // 1. Check offers first (often contains the specific variant URL)
+                        if (node.offers) {
                             const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
                             if (offer && offer.url) {
                                 rawUrl = offer.url;
                             }
                         }
 
-                        // Fallback: Check mainEntityOfPage
+                        // 2. Fallback to main node URL
+                        if (!rawUrl && node.url) {
+                            rawUrl = node.url;
+                        }
+
+                        // 3. Fallback to mainEntityOfPage
                         if (!rawUrl && typeof node.mainEntityOfPage === 'string') {
                             rawUrl = node.mainEntityOfPage;
                         }

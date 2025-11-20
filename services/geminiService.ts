@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { Product, SiteScrapeResult } from "../types";
 import { loadCatalogXML, saveCatalogXML } from "./storageService";
+import { scrapeSiteClientSide } from "./clientScraper";
 
 // Initialize Gemini Client
 // NOTE: In a Vercel environment, ensure process.env.API_KEY is set in Project Settings.
@@ -143,7 +144,7 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
   if (!domain) return { siteName: '', productCount: 0, success: false };
 
   try {
-    // --- OPTION A: REAL SCRAPING API ---
+    // --- STRATEGY: TRY API (BACKEND) THEN FALLBACK TO CLIENT ---
     console.log("Attempting real scrape via /api/scrape...");
     const params = new URLSearchParams({
         url: domain,
@@ -152,6 +153,7 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
     
     const response = await fetch(`/api/scrape?${params.toString()}`);
     
+    // If API exists and works
     if (response.ok) {
         const data = await response.json();
         if (data.success && data.xml) {
@@ -164,69 +166,22 @@ export const validateAndScrapeSite = async (domain: string, urlPattern?: string)
                 lastProduct: data.lastProduct
             };
         }
-    } 
-    console.warn("Real scrape failed or returned no data, falling back to AI simulation.");
+    }
+    
+    console.warn("Backend API failed or unavailable (404). Switching to Client-Side Scraping...");
+    throw new Error("Backend unavailable");
 
   } catch (e) {
-      console.warn("API endpoint unreachable. Switching to AI Simulation.");
-  }
+      // --- FALLBACK: CLIENT SIDE REAL SCRAPING ---
+      // If we are in preview or local without backend, we use the client scraper with proxy.
+      const clientResult = await scrapeSiteClientSide(domain, urlPattern);
+      
+      if (clientResult.success && clientResult.xml) {
+          saveCatalogXML(clientResult.xml);
+          return clientResult;
+      }
 
-  // --- OPTION B: AI SIMULATION ---
-  // Only if API is unreachable (e.g. pure frontend preview)
-  
-  if (!apiKey) return { siteName: '', productCount: 0, success: false };
-
-  const searchContext = `site:${domain} products best sellers`;
-  const systemInstruction = `
-    Actúa como un Web Scraper.
-    Analiza los resultados de búsqueda para: ${domain}.
-    
-    Genera un documento XML válido con TODOS los productos que encuentres en los resultados (Objetivo: 15-30 productos).
-    ${urlPattern ? `IMPORTANTE: Solo incluye productos cuya URL contenga "${urlPattern}".` : ''}
-    
-    IMPORTANTE SOBRE LAS URLs:
-    - Extrae la URL real del snippet de búsqueda.
-    - NO inventes URLs.
-    - NO limpies las URLs (mantén los parámetros).
-    
-    <catalog>
-      <products>
-        <product>
-          <name>...</name>
-          <price>...</price>
-          <description>...</description>
-          <link>...</link>
-          <image>...</image>
-        </product>
-      </products>
-    </catalog>
-
-    Devuelve JSON con el XML: { "siteName": "...", "productCount": 15, "xml": "..." }
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: searchContext,
-        config: {
-          systemInstruction: systemInstruction,
-          tools: [{ googleSearch: {} }],
-        }
-      });
-
-    let jsonText = response.text?.replace(/```json/g, "").replace(/```/g, "").trim();
-    if (!jsonText) throw new Error("No response");
-    const parsed = JSON.parse(jsonText);
-    if (parsed.xml) saveCatalogXML(parsed.xml);
-
-    return {
-        siteName: parsed.siteName || domain,
-        productCount: parsed.productCount || 5,
-        success: true,
-        xml: parsed.xml
-    };
-  } catch (error) {
-    console.error("Simulation Error:", error);
-    return { siteName: domain, productCount: 0, success: false };
+      console.error("Both Backend and Client scraping failed.", e);
+      return { siteName: domain, productCount: 0, success: false };
   }
 };
