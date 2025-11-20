@@ -29,7 +29,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, currentS
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fade-in">
+    <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fade-in backdrop-blur-sm">
       <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
         <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex justify-between items-center">
           <h2 className="text-lg font-bold text-slate-800">Configuración</h2>

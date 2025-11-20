@@ -27,3 +27,9 @@ export interface AppSettings {
   targetDomain: string; // e.g., "amazon.com.mx" or "mercadolibre.com.mx"
   useMockData: boolean; // Toggle between real Gemini API and mock for testing UI
 }
+
+export interface SiteScrapeResult {
+  siteName: string;
+  productCount: number; // Estimated or found count
+  success: boolean;
+}

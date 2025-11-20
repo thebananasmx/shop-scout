@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { Product } from "../types";
+import { Product, SiteScrapeResult } from "../types";
 
 // Initialize Gemini Client
 // NOTE: In a Vercel environment, ensure process.env.API_KEY is set in Project Settings.
@@ -69,14 +69,12 @@ export const searchProducts = async (
       config: {
         systemInstruction: systemInstruction,
         tools: [{ googleSearch: {} }],
-        // responseMimeType: "application/json" is NOT supported with tools, so we rely on the prompt.
       }
     });
 
     let jsonText = response.text;
     
     if (!jsonText) {
-        // If the model returns generic text without generating content properly
         return { 
             text: "No encontré resultados suficientes. Intenta ser más específico con tu búsqueda.", 
             products: [] 
@@ -91,7 +89,6 @@ export const searchProducts = async (
       parsed = JSON.parse(jsonText);
     } catch (e) {
       console.warn("JSON parsing failed. Raw text:", jsonText);
-      // Attempt to find JSON object within text if the model chatted around it
       const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
@@ -115,5 +112,53 @@ export const searchProducts = async (
       text: "Lo siento, tuve un problema técnico al realizar la búsqueda. Por favor intenta de nuevo en unos segundos.",
       products: []
     };
+  }
+};
+
+export const validateAndScrapeSite = async (domain: string): Promise<SiteScrapeResult> => {
+  if (!domain || !apiKey) return { siteName: '', productCount: 0, success: false };
+
+  // We simulate a "scrape" by searching for the site itself and some product keywords
+  const searchContext = `site:${domain} products`;
+
+  const systemInstruction = `
+    Analiza los resultados de búsqueda para el dominio: ${domain}.
+    
+    TAREA:
+    1. Identifica el nombre oficial de la tienda.
+    2. Estima una cantidad de productos "indexados" o "encontrados" basándote en los resultados (genera un número realista entre 50 y 5000 si parece ser una tienda válida).
+    
+    Devuelve SOLO JSON:
+    {
+      "siteName": "Nombre de la Tienda",
+      "productCount": 150,
+      "isValidStore": true
+    }
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: searchContext,
+        config: {
+          systemInstruction: systemInstruction,
+          tools: [{ googleSearch: {} }],
+        }
+      });
+
+    let jsonText = response.text?.replace(/```json/g, "").replace(/```/g, "").trim();
+    if (!jsonText) throw new Error("No response");
+    
+    const parsed = JSON.parse(jsonText);
+    
+    return {
+        siteName: parsed.siteName || domain,
+        productCount: parsed.productCount || 0,
+        success: parsed.isValidStore || false
+    };
+
+  } catch (error) {
+    console.error("Scrape Error:", error);
+    return { siteName: domain, productCount: 0, success: false };
   }
 };
