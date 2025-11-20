@@ -26,11 +26,13 @@ const resolveUrl = (url: string, base: string) => {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const { url } = req.query;
+  const { url, pattern } = req.query;
 
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
+
+  const filterPattern = typeof pattern === 'string' ? pattern : null;
 
   try {
     // 1. Normalize URL
@@ -51,7 +53,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const html = await response.text();
 
     // 3. Extract JSON-LD (Schema.org Products)
-    // We use regex here to avoid heavy dependencies like Cheerio/JSDOM in this lightweight function
     const jsonLdMatches = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi);
     
     let products: any[] = [];
@@ -72,12 +73,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         const productUrl = resolveUrl(node.url, targetUrl);
                         const imageUrl = resolveUrl(Array.isArray(node.image) ? node.image[0] : (node.image || ''), targetUrl);
 
+                        // STRICT FILTERING
+                        
+                        // 1. Must have a valid URL specific to the product (not just the homepage)
+                        if (!productUrl || productUrl === targetUrl) return;
+
+                        // 2. If pattern provided, must match
+                        if (filterPattern && !productUrl.includes(filterPattern)) return;
+
                         products.push({
                             name: node.name || 'Unknown Product',
                             description: node.description || '',
                             price: offer?.price || 'N/A',
                             currency: offer?.priceCurrency || 'USD',
-                            url: productUrl || targetUrl,
+                            url: productUrl,
                             image: imageUrl
                         });
                     }
@@ -90,19 +99,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     data['@graph'].forEach(extract);
                 }
             } catch (e) {
-                // Ignore parse errors for individual blocks
+                // Ignore parse errors
             }
         });
     }
 
     // 4. Generate XML
-    // If no structured data found, we return an empty catalog but success=false to warn the UI
     if (products.length === 0) {
          return res.status(200).json({
             success: false,
             siteName: new URL(targetUrl).hostname,
             productCount: 0,
-            message: "No JSON-LD structured data found on this page."
+            message: "No structured product data matched criteria."
         });
     }
 

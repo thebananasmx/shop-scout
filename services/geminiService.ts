@@ -138,7 +138,7 @@ export const searchProducts = async (
   }
 };
 
-export const validateAndScrapeSite = async (domain: string): Promise<SiteScrapeResult> => {
+export const validateAndScrapeSite = async (domain: string, urlPattern?: string): Promise<SiteScrapeResult> => {
   if (!domain) return { siteName: '', productCount: 0, success: false };
 
   // STRATEGY:
@@ -148,7 +148,12 @@ export const validateAndScrapeSite = async (domain: string): Promise<SiteScrapeR
   try {
     // --- OPTION A: REAL SCRAPING API ---
     console.log("Attempting real scrape via /api/scrape...");
-    const response = await fetch(`/api/scrape?url=${encodeURIComponent(domain)}`);
+    const params = new URLSearchParams({
+        url: domain,
+        ...(urlPattern ? { pattern: urlPattern } : {})
+    });
+    
+    const response = await fetch(`/api/scrape?${params.toString()}`);
     
     if (response.ok) {
         const data = await response.json();
@@ -182,6 +187,8 @@ export const validateAndScrapeSite = async (domain: string): Promise<SiteScrapeR
     Analiza los resultados de búsqueda para: ${domain}.
     
     Genera un documento XML válido con 5 productos representativos que encuentres en los resultados.
+    ${urlPattern ? `IMPORTANTE: Solo incluye productos cuya URL contenga "${urlPattern}".` : ''}
+    
     El formato debe ser:
     <catalog>
       <products>

@@ -44,10 +44,16 @@ export const loadSettings = (): AppSettings => {
     return stored ? JSON.parse(stored) : {
       targetDomain: '',
       useMockData: false,
-      xmlCatalog: null
+      xmlCatalog: null,
+      urlPattern: ''
     };
   } catch (e) {
-    return { targetDomain: '', useMockData: false, xmlCatalog: null };
+    return { 
+      targetDomain: '', 
+      useMockData: false, 
+      xmlCatalog: null,
+      urlPattern: '' 
+    };
   }
 };
 

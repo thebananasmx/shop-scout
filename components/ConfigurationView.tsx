@@ -16,6 +16,7 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
   onClearHistory 
 }) => {
   const [domain, setDomain] = useState(currentSettings.targetDomain);
+  const [urlPattern, setUrlPattern] = useState(currentSettings.urlPattern || '');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeProgress, setScrapeProgress] = useState(0);
   const [scrapeResult, setScrapeResult] = useState<SiteScrapeResult | null>(null);
@@ -35,8 +36,8 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
       });
     }, 500);
 
-    // Call the Hybrid Service (Real API -> Fallback AI)
-    const result = await validateAndScrapeSite(domain);
+    // Call the Hybrid Service (Real API -> Fallback AI) with pattern
+    const result = await validateAndScrapeSite(domain, urlPattern);
 
     clearInterval(interval);
     setScrapeProgress(100);
@@ -46,11 +47,11 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
       setScrapeResult(result);
       
       if (result.success) {
-        // Save everything, including the new XML found (implicitly saved by service in localStorage, 
-        // but we update state to reflect domain change)
+        // Save everything
         onSave({ 
             ...currentSettings, 
             targetDomain: domain,
+            urlPattern: urlPattern,
             xmlCatalog: result.xml 
         });
       }
@@ -58,7 +59,11 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
   };
 
   const handleSaveManual = () => {
-    onSave({ ...currentSettings, targetDomain: domain });
+    onSave({ 
+      ...currentSettings, 
+      targetDomain: domain,
+      urlPattern: urlPattern 
+    });
     onBack();
   };
 
@@ -89,16 +94,29 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
               Define el sitio donde ShopScout creará el catálogo XML.
             </p>
             
-            <div className="flex gap-2">
-                <input
-                type="text"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
-                placeholder="ej. nike.com.mx"
-                disabled={isScraping}
-                className="flex-grow px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-sm shadow-sm"
-                />
-            </div>
+            <input
+              type="text"
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              placeholder="ej. nike.com.mx"
+              disabled={isScraping}
+              className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-sm shadow-sm mb-3"
+            />
+
+            <label className="block text-sm font-bold text-slate-800 mb-1">
+              Patrón de URL de Producto (Opcional)
+            </label>
+            <p className="text-xs text-slate-500 mb-2">
+              Filtra enlaces que contengan este texto (ej. "/p/", "/producto/"). Útil para evitar blogs o categorías.
+            </p>
+            <input
+              type="text"
+              value={urlPattern}
+              onChange={(e) => setUrlPattern(e.target.value)}
+              placeholder="ej. /producto/"
+              disabled={isScraping}
+              className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-sm shadow-sm"
+            />
           </div>
 
           {/* Scraping Action */}
@@ -152,13 +170,13 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                         </svg>
                     </div>
                     <h3 className={`font-bold ${scrapeResult.success ? 'text-green-800' : 'text-amber-800'}`}>
-                        {scrapeResult.success ? 'XML Generado' : 'Advertencia'}
+                        {scrapeResult.success ? 'XML Generado' : 'Sin productos válidos'}
                     </h3>
                 </div>
                 <p className="text-sm text-slate-700 mb-2">
                     {scrapeResult.success 
                         ? `Catálogo XML creado para ${scrapeResult.siteName} y almacenado localmente.` 
-                        : `No pudimos generar el XML automáticamente, pero se guardó la URL.`}
+                        : `No se encontraron productos que coincidan con el criterio.`}
                 </p>
                 {scrapeResult.success && (
                     <div className="mt-3 bg-white/60 p-3 rounded-lg flex justify-between items-center">

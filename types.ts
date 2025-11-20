@@ -27,6 +27,7 @@ export interface AppSettings {
   targetDomain: string; // e.g., "amazon.com.mx" or "mercadolibre.com.mx"
   useMockData: boolean; // Toggle between real Gemini API and mock for testing UI
   xmlCatalog?: string | null; // Stores the structured XML of the scraped site
+  urlPattern?: string; // Optional string to filter product URLs (e.g., "/p/" or "/producto/")
 }
 
 export interface SiteScrapeResult {
