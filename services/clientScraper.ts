@@ -15,16 +15,21 @@ const escapeXml = (unsafe: string) => {
   });
 };
 
-// Helper to resolve absolute URLs via simple string concatenation
+// Helper to resolve absolute URLs, more robustly using URL constructor
 const resolveUrlRaw = (href: string, baseUrl: string): string => {
     if (!href) return '';
     href = href.trim();
     if (href.startsWith('http://') || href.startsWith('https://')) return href;
     if (href.startsWith('//')) return 'https:' + href;
     
-    const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    const cleanHref = href.startsWith('/') ? href : '/' + href;
-    return cleanBase + cleanHref;
+    try {
+        return new URL(href, baseUrl).href;
+    } catch (e) {
+        // Fallback for malformed hrefs
+        const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+        const cleanHref = href.startsWith('/') ? href : '/' + href;
+        return cleanBase + cleanHref;
+    }
 };
 
 export const scrapeSiteClientSide = async (
@@ -32,13 +37,11 @@ export const scrapeSiteClientSide = async (
     urlPattern?: string, 
     matchMode: PatternMatchMode = 'CONTAINS'
 ): Promise<SiteScrapeResult> => {
-    // 1. Setup URL
     let baseUrl = domain.startsWith('http') ? domain : `https://${domain}`;
-    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1); // Normalize base
+    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
     
-    console.log(`[ClientScraper] Starting Raw Crawl for: ${baseUrl} | Pattern: ${urlPattern || 'NONE'} | Mode: ${matchMode}`);
+    console.log(`[ClientScraper] Starting HUMAN-LIKE crawl for: ${baseUrl}`);
 
-    // 2. Proxies (Try multiple to ensure we get HTML)
     const proxies = [
         `https://api.allorigins.win/raw?url=${encodeURIComponent(baseUrl)}`,
         `https://corsproxy.io/?${encodeURIComponent(baseUrl)}`
@@ -47,177 +50,107 @@ export const scrapeSiteClientSide = async (
     let html = '';
     for (const proxy of proxies) {
         try {
-            console.log(`[ClientScraper] Fetching via: ${proxy}`);
-            const res = await fetch(proxy);
+            const res = await fetch(proxy, { headers: { 'Accept': 'text/html' } });
             if (res.ok) {
                 html = await res.text();
                 if (html.length > 1000) break;
             }
-        } catch (e) { 
-            console.warn('Proxy failed', e); 
-        }
+        } catch (e) { console.warn('Proxy failed', e); }
     }
 
     if (!html) {
-        console.error("[ClientScraper] Failed to fetch HTML from any proxy.");
         return { success: false, siteName: domain, productCount: 0 };
     }
 
-    // 3. RAW PARSING
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
-    const seen = new Set<string>();
+    const seenUrls = new Set<string>();
     const products: any[] = [];
+    const priceRegex = /(?:\$|€|£|USD|MXN)\s*[\d,]+(?:\.\d{2})?/i;
 
-    // Get ALL Links in the document
-    const links = Array.from(doc.querySelectorAll('a'));
-    console.log(`[ClientScraper] Found ${links.length} total links. Filtering...`);
+    // A "human-like" scraper finds elements that LOOK like products.
+    // A product usually has a link, an image, a name, and a price in close proximity.
+    // We'll start by finding all links that contain an image, as this is a strong signal.
+    const candidateLinks = Array.from(doc.querySelectorAll('a')).filter(a => a.querySelector('img'));
+    console.log(`[ClientScraper] Found ${candidateLinks.length} potential product links (containing images). Analyzing...`);
 
-    for (const link of links) {
-        const rawHref = link.getAttribute('href');
-        
-        if (!rawHref || rawHref.length < 2 || rawHref.startsWith('#') || rawHref.startsWith('javascript') || rawHref.startsWith('mailto') || rawHref.startsWith('tel')) continue;
+    for (const link of candidateLinks) {
+        const href = link.getAttribute('href');
+        if (!href || href.startsWith('#') || href.startsWith('javascript:')) continue;
 
-        const absUrl = resolveUrlRaw(rawHref, baseUrl);
+        const fullUrl = resolveUrlRaw(href, baseUrl);
+        if (seenUrls.has(fullUrl)) continue;
 
-        // --- FILTER LOGIC UPDATED ---
-        let isMatch = true;
-
-        if (urlPattern) {
-            if (matchMode === 'CONTAINS') {
-                isMatch = absUrl.includes(urlPattern);
-            } else if (matchMode === 'ENDS_WITH') {
-                isMatch = absUrl.endsWith(urlPattern);
-            } else if (matchMode === 'STARTS_WITH') {
-                // Check full URL match
-                isMatch = absUrl.startsWith(urlPattern);
-                // If not matched, check path match (e.g. user typed "/p/" and url is "http://site.com/p/...")
-                if (!isMatch) {
-                    try {
-                        // Simple check: does the url contain the pattern right after the domain?
-                        // Or strictly speaking, does the path start with it?
-                        // Since this is raw, we can just check if absUrl contains domain + pattern if pattern starts with /
-                        const pathStart = absUrl.replace(baseUrl, '');
-                        isMatch = pathStart.startsWith(urlPattern);
-                    } catch (e) {}
-                }
+        // Find the best "container" for this product's data.
+        // We go up the DOM tree from the link, looking for the smallest parent
+        // element that also contains a price. This is our product "card".
+        let container: HTMLElement | null = link;
+        let foundPriceInContainer = false;
+        for (let i = 0; i < 5 && container; i++) {
+            if (container.textContent && priceRegex.test(container.textContent)) {
+                foundPriceInContainer = true;
+                break;
             }
-            
-            if (!isMatch) continue;
-        } 
-        else {
-            // Heuristic if no pattern
-            const lower = absUrl.toLowerCase();
-            if (lower === baseUrl || lower === baseUrl + '/' || lower.includes('login') || lower.includes('cart') || lower.includes('account') || lower.includes('contact') || lower.includes('terms')) continue;
+            container = container.parentElement;
         }
 
-        if (seen.has(absUrl)) continue;
+        if (!container || !foundPriceInContainer) {
+            continue; // No price found near the link, discard.
+        }
+        
+        // --- With a container confirmed, extract details ---
 
-        // --- EXTRACTION LOGIC ---
-        let img = link.querySelector('img');
-        let imgSrc = img?.getAttribute('src') || img?.getAttribute('data-src') || img?.getAttribute('srcset')?.split(' ')[0] || '';
-        
-        let name = img?.getAttribute('alt') || link.getAttribute('title') || link.innerText || '';
-        name = name.replace(/[\r\n\t]+/g, " ").trim();
-        
-        const linkText = link.innerText;
-        const parentText = link.parentElement?.innerText || '';
-        const combinedText = (linkText + " " + parentText).replace(/\s+/g, ' ');
-        const priceMatch = combinedText.match(/[$€£]\s?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/) || combinedText.match(/(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s?(USD|MXN|MN|EUR)/);
-        
-        let price = priceMatch ? priceMatch[0] : 'Ver en tienda';
+        // 1. Extract Price
+        const priceText = container.textContent || '';
+        const priceMatch = priceText.match(priceRegex);
+        const price = priceMatch ? priceMatch[0].trim() : 'N/A';
 
+        // 2. Extract Image
+        const img = container.querySelector('img');
+        const imageUrl = img ? resolveUrlRaw(img.dataset.src || img.src || '', baseUrl) : '';
+        if (!imageUrl) continue; // No valid image
+
+        // 3. Extract Name (with priority)
+        let name = '';
+        if (img && img.alt) name = img.alt;
+        
+        if (!name) {
+            const h = container.querySelector('h2, h3, h4, .product-title, .product-name');
+            if (h) name = h.textContent || '';
+        }
+        
+        if (!name) name = link.textContent || '';
+        
+        name = name.replace(/\s+/g, ' ').trim();
+        if (!name) continue; // No valid name
+
+        // 4. Final user-defined URL pattern filter
+        let patternMatches = true;
         if (urlPattern) {
-            seen.add(absUrl);
+            const pathOnly = new URL(fullUrl).pathname;
+            if (matchMode === 'CONTAINS') patternMatches = pathOnly.includes(urlPattern);
+            else if (matchMode === 'ENDS_WITH') patternMatches = pathOnly.endsWith(urlPattern);
+            else if (matchMode === 'STARTS_WITH') patternMatches = pathOnly.startsWith(urlPattern.startsWith('/') ? urlPattern : '/' + urlPattern);
+        }
+
+        if (patternMatches) {
+            seenUrls.add(fullUrl);
             products.push({
-                name: name || 'Producto Detectado',
+                name: name,
                 price: price,
-                url: absUrl,
-                image: resolveUrlRaw(imgSrc, baseUrl),
-                description: ''
+                url: fullUrl,
+                image: imageUrl
             });
-        } else {
-            if (imgSrc && name.length > 3) {
-                seen.add(absUrl);
-                products.push({
-                    name: name,
-                    price: price,
-                    url: absUrl,
-                    image: resolveUrlRaw(imgSrc, baseUrl),
-                    description: ''
-                });
-            }
         }
     }
-
-    // 4. JSON-LD Backup
-    try {
-        const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
-        scripts.forEach(script => {
-            try {
-                const content = script.textContent || '{}';
-                const cleanContent = content.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
-                const data = JSON.parse(cleanContent);
-                
-                const process = (node: any) => {
-                    if ((node['@type'] === 'Product' || node['@type'] === 'ProductGroup') && node.name) {
-                        let u = node.url;
-                        if (node.offers) {
-                            const o = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-                            if (o && o.url) u = o.url;
-                        }
-                        
-                        if (u) {
-                            const fullU = resolveUrlRaw(u, baseUrl);
-                            
-                            // Apply pattern logic to JSON-LD results too
-                            let isMatch = true;
-                            if (urlPattern) {
-                                if (matchMode === 'CONTAINS') isMatch = fullU.includes(urlPattern);
-                                else if (matchMode === 'ENDS_WITH') isMatch = fullU.endsWith(urlPattern);
-                                else if (matchMode === 'STARTS_WITH') {
-                                     isMatch = fullU.startsWith(urlPattern) || fullU.replace(baseUrl, '').startsWith(urlPattern);
-                                }
-                            }
-
-                            if (isMatch && !seen.has(fullU)) {
-                                seen.add(fullU);
-                                let i = node.image;
-                                if (Array.isArray(i)) i = i[0];
-                                if (typeof i === 'object' && i.url) i = i.url;
-                                
-                                let p = 'Ver en tienda';
-                                if (node.offers) {
-                                    const o = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-                                    if (o.price) p = o.price + (o.priceCurrency ? ' ' + o.priceCurrency : '');
-                                }
-
-                                products.unshift({ 
-                                    name: node.name,
-                                    price: p,
-                                    url: fullU,
-                                    image: resolveUrlRaw(i || '', baseUrl),
-                                    description: node.description || ''
-                                });
-                            }
-                        }
-                    }
-                };
-                if (Array.isArray(data)) data.forEach(process);
-                else process(data);
-                if (data['@graph']) data['@graph'].forEach(process);
-            } catch(e) {}
-        });
-    } catch(e) {}
-
-    console.log(`[ClientScraper] Extracted ${products.length} potential products.`);
+    
+    console.log(`[ClientScraper] Found ${products.length} products via human-like analysis.`);
 
     if (products.length === 0) {
         return { success: false, siteName: domain, productCount: 0 };
     }
 
     const limited = products.slice(0, 80);
-
     const xml = `
 <catalog>
 <meta><source>${escapeXml(baseUrl)}</source></meta>
