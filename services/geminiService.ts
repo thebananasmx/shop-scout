@@ -1,99 +1,134 @@
 import { GoogleGenAI } from "@google/genai";
-import { Product, Message, Sender } from "../types";
+import { Product, Message, Sender, Source } from "../types";
 
-const apiKey = process.env.API_KEY || ''; 
+const apiKey = process.env.API_KEY || '';
 const ai = new GoogleGenAI({ apiKey });
 
+// Represents the output of Phase 1
+interface SearchPlan {
+  isProductSearch: boolean;
+  needsClarification: boolean;
+  responseText: string;
+  productUrls: string[];
+  sources: Source[];
+}
+
+// Represents the final structured response for the UI
+interface FinalResponse {
+  text: string;
+  products: Product[];
+  sources: Source[];
+}
+
 /**
- * Procesa una conversación, decide si buscar productos o pedir clarificación, y devuelve el resultado.
- * @param messages El historial de mensajes de la conversación.
- * @param targetDomain El dominio del e-commerce donde buscar.
- * @returns Un objeto con el texto de respuesta y una lista de productos (si aplica).
+ * PHASE 1: Analyze conversation and create a search plan.
+ * Determines if it's a product search, a general question, or needs clarification.
+ * If it's a product search, it returns URLs.
  */
-export const searchProducts = async (
-  messages: Message[], 
-  targetDomain: string
-): Promise<{ text: string, products: Product[] }> => {
+export const getSearchPlan = async (messages: Message[]): Promise<SearchPlan> => {
+  if (!apiKey) throw new Error("API Key not configured.");
 
-  if (!apiKey) {
-    return {
-      text: "Error: API Key no configurada. Por favor configura process.env.API_KEY.",
-      products: []
-    };
-  }
-  
-  if (!targetDomain) {
-    return {
-      text: "Por favor, primero configura un sitio web de e-commerce en el menú de configuración para que pueda buscar.",
-      products: []
-    }
-  }
-
-  // Formatear el historial para la IA
-  const conversationHistory = messages.map(msg => 
+  const conversationHistory = messages.map(msg =>
     `${msg.sender === Sender.USER ? 'Usuario' : 'Asistente'}: ${msg.text}`
   ).join('\n');
 
   const systemInstruction = `
-    Eres ShopScout, un asistente experto en e-commerce que busca productos en tiempo real con MÁXIMA PRECISIÓN y mantiene una conversación natural.
-    Tu tarea es analizar el HISTORIAL DE CONVERSACIÓN para entender la intención completa del usuario.
-    DOMINIO OBJETIVO para buscar: ${targetDomain}
+    You are an AI search assistant router. Your job is to analyze the user's latest message in the context of a conversation and decide the next step.
+    You MUST respond ONLY with a raw JSON object. Do not add any text before or after the JSON. Do not use markdown like \`\`\`json.
 
-    PROCESO DE DECISIÓN:
-    1.  **ANALIZA EL HISTORIAL:** Lee todo el historial para sintetizar lo que el usuario realmente quiere. Ej: Si el usuario dice "chamarras" y luego "para hombre", tu búsqueda interna debe ser "chamarras para hombre".
-    2.  **DECIDE LA ACCIÓN:**
-        *   **SI LA INTENCIÓN ES CLARA (contiene producto, tipo, marca, etc.):** Realiza la búsqueda de productos. Tu respuesta DEBE ser el formato JSON.
-        *   **SI LA INTENCIÓN ES VAGA (ej. "zapatos", "un regalo", o una respuesta a una pregunta tuya que aún es muy general):** NO busques. En su lugar, haz una pregunta de clarificación para obtener más detalles. Tu respuesta DEBE ser TEXTO PLANO con la pregunta.
+    Your JSON output structure MUST BE:
+    {"summary": "...", "urls": ["url1", "url2", ...]}
 
-    REGLAS DE BÚSQUEDA (solo si la acción es buscar):
-    1.  **BÚSQUEDA EXCLUSIVA:** Limita TODA tu búsqueda al dominio: site:${targetDomain}.
-    2.  **EXTRACCIÓN VERIFICADA:** El 'link' DEBE ser la URL directa a la página del producto (PDP). La 'imageUrl' DEBE ser la URL de la imagen principal del producto. El 'price' DEBE ser el precio real y visible en esa página.
-    3.  **NO INVENTAR:** Si no puedes verificar un dato, indícalo como "No disponible".
-    4.  **LÍMITE:** Devuelve un MÁXIMO de 5 productos. Si encuentras más, menciónalo en el 'summary'.
+    CRITICAL RULES:
+    1.  **If the user is asking for products, recommendations, or comparisons**:
+        - Use the Google Search tool to find 3-5 product page URLs.
+        - A product page URL must look like '.../product/item-name' or '.../p/12345'.
+        - **YOU MUST AVOID**: Homepages ('store.com'), category pages ('.../collections/shoes'), brand pages ('.../brands/nike'), and search result pages.
+        - The "summary" should be a brief confirmation message like "Encontré algunas páginas relevantes. Analizándolas ahora...".
+        - The "urls" array MUST contain the high-quality product URLs you found.
 
-    FORMATO DE RESPUESTA:
-    *   **CASO BÚSQUEDA EXITOSA (JSON RAW):**
-        {
-          "summary": "Texto resumen de tu hallazgo.",
-          "products": [{"name": "...", "price": "...", "description": "...", "imageUrl": "...", "link": "...", "inStock": true, "source": "${targetDomain}"}]
-        }
-    *   **CASO PREGUNTA DE CLARIFICACIÓN (TEXTO PLANO):**
-        Ej: ¡Claro! Para darte mejores opciones, ¿buscas chamarra para hombre o mujer? ¿Para el frío, la lluvia o algo más casual?
+    2.  **If the user's request is too vague to search for products** (e.g., "I need shoes", "laptops"):
+        - The "summary" MUST be a clarifying question. Example: "¡Claro! ¿Qué tipo de zapatos buscas? ¿Algo casual, deportivo o formal?".
+        - The "urls" array MUST be empty.
+
+    3.  **If the user asks a general knowledge question** (e.g., "what is the capital of France"):
+        - The "summary" MUST be the direct answer to the question.
+        - The "urls" array MUST be empty.
+
+    EXAMPLE of a GOOD product search response:
+    {"summary": "¡Claro! Encontré algunos tenis Adidas. Analizando los detalles...", "urls": ["https://www.adidas.mx/tenis-ultraboost/123", "https://www.innovasport.com/p/adidas-galaxy-6/456"]}
   `;
 
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: `CONVERSATION HISTORY:\n${conversationHistory}\n\nLATEST USER MESSAGE: "${messages[messages.length - 1].text}"`,
+    config: { systemInstruction, tools: [{ googleSearch: {} }] },
+  });
+
+  const responseText = response.text?.trim() || "";
+  const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+  const sources: Source[] = groundingChunks
+      .map((chunk: any) => ({
+        uri: chunk.web?.uri || '',
+        title: chunk.web?.title || '',
+      }))
+      .filter((source: Source) => source.uri && source.title);
+
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `HISTORIAL DE CONVERSACIÓN:\n${conversationHistory}`,
-      config: {
-        systemInstruction: systemInstruction,
-        tools: [{ googleSearch: {} }],
-      }
-    });
+    // Attempt to parse the response as JSON, cleaning potential markdown first
+    const cleanResponse = responseText.replace(/^```json\s*/, '').replace(/```$/, '').trim();
+    const parsed = JSON.parse(cleanResponse);
 
-    const responseText = response.text?.trim() || "";
-
-    // Intenta analizar la respuesta como JSON. Si falla, es una pregunta de clarificación.
-    try {
-      // Intenta encontrar un bloque JSON, incluso si hay texto antes o después.
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        // No hay JSON, es una respuesta conversacional.
-        return { text: responseText, products: [] };
-      }
-      
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        text: parsed.summary || "Aquí están los resultados que encontré:",
-        products: parsed.products || []
-      };
-    } catch (e) {
-      // El análisis falló, lo que significa que la respuesta de la IA fue una pregunta o un texto simple.
-      return { text: responseText, products: [] };
+    if (parsed.summary && parsed.urls && Array.isArray(parsed.urls)) {
+        // We got the structured response we wanted.
+        const isVague = parsed.urls.length === 0 && parsed.summary.includes('?');
+        
+        return {
+            isProductSearch: parsed.urls.length > 0,
+            needsClarification: isVague,
+            responseText: parsed.summary,
+            productUrls: parsed.urls,
+            sources: sources,
+        };
     }
-
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    return { text: "Hubo un error al comunicarme con el asistente. Por favor, intenta de nuevo.", products: [] };
+  } catch (e) {
+    // Parsing failed. This means the model gave a plain text response for a general question.
+    // This is our fallback.
   }
+
+  // Fallback: The response was not the expected JSON. Treat it as a direct answer.
+  return {
+    isProductSearch: false,
+    needsClarification: false,
+    responseText: responseText || "No pude procesar esa respuesta.",
+    productUrls: [],
+    sources,
+  };
+};
+
+/**
+ * PHASE 2: Scrape product data from a list of URLs using our backend endpoint.
+ */
+export const scrapeProductData = async (urls: string[]): Promise<Product[]> => {
+  const scrapePromises = urls.map(url =>
+    fetch('/api/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    .then(res => {
+        if (!res.ok) {
+            console.error(`Failed to scrape ${url}: ${res.statusText}`);
+            return null; // Return null on failure
+        }
+        return res.json();
+    })
+    .catch(err => {
+        console.error(`Error in scrape fetch for ${url}:`, err);
+        return null; // Return null on error
+    })
+  );
+
+  const results = await Promise.all(scrapePromises);
+  return results.filter((p): p is Product => p !== null && p.name && p.price && p.imageUrl);
 };

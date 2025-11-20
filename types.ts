@@ -14,16 +14,21 @@ export interface Product {
   source?: string;
 }
 
+export interface Source {
+  title: string;
+  uri: string;
+}
+
 export interface Message {
   id: string;
   text: string;
   sender: Sender;
   timestamp: number;
-  products?: Product[]; // Optional structured data found by the bot
+  products?: Product[];
+  sources?: Source[];
   isLoading?: boolean;
 }
 
 export interface AppSettings {
-  targetDomain: string; // e.g., "amazon.com.mx" or "mercadolibre.com.mx"
-  useMockData: boolean; // Toggle between real Gemini API and mock for testing UI
+  useMockData: boolean; // Toggle for testing UI without API calls
 }

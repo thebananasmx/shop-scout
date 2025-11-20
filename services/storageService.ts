@@ -1,7 +1,7 @@
 import { Message, AppSettings } from '../types';
 
-const STORAGE_KEY_MESSAGES = 'shopscout_messages';
-const STORAGE_KEY_SETTINGS = 'shopscout_settings';
+const STORAGE_KEY_MESSAGES = 'scout_messages';
+const STORAGE_KEY_SETTINGS = 'scout_settings';
 
 export const saveMessages = (messages: Message[]) => {
   try {
@@ -32,12 +32,10 @@ export const loadSettings = (): AppSettings => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY_SETTINGS);
     return stored ? JSON.parse(stored) : {
-      targetDomain: '',
       useMockData: false,
     };
   } catch (e) {
     return { 
-      targetDomain: '', 
       useMockData: false, 
     };
   }
@@ -45,5 +43,4 @@ export const loadSettings = (): AppSettings => {
 
 export const clearHistory = () => {
   localStorage.removeItem(STORAGE_KEY_MESSAGES);
-  // Se ha quitado la lógica del catálogo, por lo que ya no es necesario borrarlo.
 };

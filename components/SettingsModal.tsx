@@ -1,32 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { AppSettings } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentSettings: AppSettings;
-  onSave: (settings: AppSettings) => void;
   onClearHistory: () => void;
 }
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, currentSettings, onSave, onClearHistory }) => {
-  const [domain, setDomain] = useState(currentSettings.targetDomain);
-  
-  useEffect(() => {
-    if (isOpen) {
-        setDomain(currentSettings.targetDomain);
-    }
-  }, [isOpen, currentSettings]);
-
+const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onClearHistory }) => {
   if (!isOpen) return null;
-
-  const handleSave = () => {
-    onSave({
-      ...currentSettings,
-      targetDomain: domain
-    });
-    onClose();
-  };
 
   return (
     <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fade-in backdrop-blur-sm">
@@ -38,49 +20,32 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, currentS
           </button>
         </div>
         
-        <div className="p-6 space-y-6">
-          
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Sitio Web Preferido (Opcional)
-            </label>
-            <p className="text-xs text-slate-500 mb-2">
-              Limita la búsqueda a un dominio específico.
-            </p>
-            <input
-              type="text"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              placeholder="ej. amazon.com.mx"
-              className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-            />
-          </div>
-
-          <hr className="border-slate-100" />
-
+        <div className="p-6">
           <div className="bg-red-50 p-4 rounded-lg border border-red-100">
             <h3 className="text-sm font-semibold text-red-800 mb-1">Zona de Peligro</h3>
+             <p className="text-xs text-red-700 mb-3">
+              Esto borrará permanentemente todos los mensajes del chat.
+            </p>
             <button 
               onClick={() => {
-                if(window.confirm('¿Borrar todo el historial?')) {
+                if(window.confirm('¿Estás seguro de que quieres borrar todo el historial del chat?')) {
                     onClearHistory();
                     onClose();
                 }
               }}
-              className="text-red-600 text-xs font-medium hover:underline flex items-center"
+              className="w-full text-center py-2 bg-red-100 text-red-700 text-sm font-bold rounded-lg hover:bg-red-200 transition-colors"
             >
               Borrar historial de chat
             </button>
           </div>
-
         </div>
 
         <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
           <button 
-            onClick={handleSave}
+            onClick={onClose}
             className="bg-indigo-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm"
           >
-            Guardar
+            Hecho
           </button>
         </div>
       </div>

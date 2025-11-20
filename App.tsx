@@ -1,20 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Message, Sender, AppSettings } from './types';
+import { Message, Sender, AppSettings, Source, Product } from './types';
 import { SendIcon, SettingsIcon, BotIcon } from './components/Icons';
 import ProductCard from './components/ProductCard';
-import ConfigurationView from './components/ConfigurationView';
-import { searchProducts } from './services/geminiService';
+import SettingsModal from './components/SettingsModal';
+import { getSearchPlan, scrapeProductData } from './services/geminiService';
 import { saveMessages, loadMessages, saveSettings, loadSettings, clearHistory } from './services/storageService';
+
+const SourceCitations: React.FC<{ sources: Source[] }> = ({ sources }) => (
+  <div className="mt-3 w-full pl-2">
+    <p className="text-xs font-semibold text-slate-500 mb-1">Fuentes:</p>
+    <ul className="list-disc list-inside space-y-1">
+      {sources.slice(0, 3).map((source, index) => (
+        <li key={index} className="text-xs text-slate-600 truncate">
+          <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+            {source.title || new URL(source.uri).hostname}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </div>
+);
 
 const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>({ targetDomain: '', useMockData: false });
+  const [settings, setSettings] = useState<AppSettings>({ useMockData: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialization
   useEffect(() => {
     const savedMsgs = loadMessages();
     const savedConfig = loadSettings();
@@ -24,17 +38,15 @@ const App: React.FC = () => {
     if (savedMsgs.length === 0) {
       setMessages([{
         id: 'welcome',
-        text: "¡Hola! Soy ShopScout. Dime qué producto estás buscando (ej. 'Tenis para correr', 'Laptop gamer') y buscaré las mejores opciones para ti.",
+        text: "¡Hola! Soy Scout. Pídeme recomendaciones de productos o hazme una pregunta. Exploraré la web para encontrar la mejor información para ti.",
         sender: Sender.BOT,
         timestamp: Date.now()
       }]);
     } else {
       setMessages(savedMsgs);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     if (messages.length > 0) {
@@ -59,65 +71,85 @@ const App: React.FC = () => {
     setMessages(updatedMessages);
     setIsLoading(true);
 
-    // Add placeholder loading message
     const loadingId = 'loading-' + Date.now();
     setMessages(prev => [...prev, {
       id: loadingId,
-      text: "Buscando mejores ofertas...",
+      text: "Pensando...",
       sender: Sender.BOT,
       timestamp: Date.now(),
       isLoading: true
     }]);
 
-    // Call Gemini Service with the full conversation history
-    const result = await searchProducts(updatedMessages, settings.targetDomain);
+    try {
+      // PHASE 1: Get the search plan (URLs or text response)
+      const plan = await getSearchPlan(updatedMessages);
+      
+      setMessages(prev => prev.map(m => m.id === loadingId ? { ...m, text: plan.responseText } : m));
 
-    // Remove loading message and add actual response
-    setMessages(prev => {
-      const filtered = prev.filter(m => m.id !== loadingId);
-      return [...filtered, {
-        id: (Date.now() + 1).toString(),
-        text: result.text,
-        products: result.products,
-        sender: Sender.BOT,
-        timestamp: Date.now()
-      }];
-    });
+      let finalProducts: Product[] = [];
+      let finalSources: Source[] = plan.sources;
+      let finalResponseText = plan.responseText;
+
+      // PHASE 2: If we got URLs, scrape them for product data
+      if (plan.isProductSearch && plan.productUrls.length > 0) {
+         setMessages(prev => prev.map(m => m.id === loadingId ? { ...m, text: "Analizando páginas de productos..." } : m));
+         finalProducts = await scrapeProductData(plan.productUrls);
+         if (finalProducts.length === 0) {
+           finalResponseText = "Lo siento, no pude extraer detalles de las páginas que encontré. ¿Podrías intentar con una búsqueda más específica?";
+         } else {
+           finalResponseText = `¡Listo! Encontré ${finalProducts.length} producto(s) relevante(s) para ti:`;
+         }
+      }
+
+      // Final Step: Replace loading message with the final result
+      setMessages(prev => {
+        const filtered = prev.filter(m => m.id !== loadingId);
+        return [...filtered, {
+          id: (Date.now() + 1).toString(),
+          text: finalResponseText,
+          products: finalProducts,
+          sources: finalSources,
+          sender: Sender.BOT,
+          timestamp: Date.now()
+        }];
+      });
+
+    } catch (error) {
+       setMessages(prev => {
+        const filtered = prev.filter(m => m.id !== loadingId);
+        return [...filtered, {
+          id: (Date.now() + 1).toString(),
+          text: "Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.",
+          sender: Sender.BOT,
+          timestamp: Date.now()
+        }];
+      });
+    }
 
     setIsLoading(false);
-  };
-
-  const handleSettingsSave = (newSettings: AppSettings) => {
-    setSettings(newSettings);
-    saveSettings(newSettings);
   };
 
   const handleClearHistory = () => {
     clearHistory();
     setMessages([{
         id: 'welcome-reset',
-        text: "Historial borrado. ¿Qué buscas hoy?",
+        text: "Historial borrado. ¿En qué puedo ayudarte?",
         sender: Sender.BOT,
         timestamp: Date.now()
       }]);
   };
 
   return (
-    // Outer wrapper for desktop background centering
     <div className="w-full min-h-screen bg-slate-200 sm:flex sm:items-center sm:justify-center font-sans">
-      
-      {/* App Container - Full screen on mobile, Boxed phone-like on desktop */}
       <div className="relative flex flex-col w-full h-[100dvh] sm:h-[850px] sm:max-w-[420px] bg-slate-50 text-slate-900 sm:rounded-[30px] sm:shadow-2xl sm:border-[8px] sm:border-slate-800 overflow-hidden">
-      
-        {/* Header */}
         <header className="flex-none bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center sticky top-0 z-10 shadow-sm">
           <div className="flex items-center space-x-2">
             <div className="bg-indigo-600 p-1.5 rounded-lg">
               <BotIcon className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="font-bold text-lg leading-none text-indigo-900">ShopScout</h1>
-              <p className="text-[10px] font-medium text-indigo-400 uppercase tracking-wider">AI Assistant</p>
+              <h1 className="font-bold text-lg leading-none text-indigo-900">Scout</h1>
+              <p className="text-[10px] font-medium text-indigo-400 uppercase tracking-wider">AI Search Assistant</p>
             </div>
           </div>
           <button 
@@ -128,14 +160,12 @@ const App: React.FC = () => {
           </button>
         </header>
 
-        {/* Chat Area */}
         <main className="flex-grow overflow-y-auto p-4 space-y-6">
           {messages.map((msg) => (
             <div 
               key={msg.id} 
               className={`flex flex-col ${msg.sender === Sender.USER ? 'items-end' : 'items-start'}`}
             >
-              {/* Message Bubble */}
               <div 
                 className={`
                   max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm
@@ -145,25 +175,29 @@ const App: React.FC = () => {
                 `}
               >
                 {msg.isLoading ? (
-                  <div className="flex space-x-2 items-center h-5">
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                   <div className="flex items-center space-x-2">
+                    <div className="w-2 h-2 bg-slate-400 rounded-full animate-pulse"></div>
+                    <span className="text-slate-500 text-xs italic">{msg.text}</span>
                   </div>
                 ) : (
                   msg.text
                 )}
               </div>
-
-              {/* Products Grid (Only for Bot) */}
+              
               {msg.products && msg.products.length > 0 && (
-                <div className="mt-4 w-full pl-2">
-                  <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4">
+                <div className="mt-4 w-full">
+                  <div className="flex overflow-x-auto gap-4 pb-4 -ml-2 pl-2">
                     {msg.products.map((product, idx) => (
-                      <ProductCard key={`${msg.id}-prod-${idx}`} product={product} />
+                      <div key={`${msg.id}-prod-${idx}`} className="flex-shrink-0 w-[85%] max-w-xs">
+                        <ProductCard product={product} />
+                      </div>
                     ))}
                   </div>
                 </div>
+              )}
+
+              {msg.sources && msg.sources.length > 0 && !msg.products?.length && (
+                 <SourceCitations sources={msg.sources} />
               )}
               
               <span className="text-[10px] text-slate-400 mt-1 px-1">
@@ -174,7 +208,6 @@ const App: React.FC = () => {
           <div ref={messagesEndRef} />
         </main>
 
-        {/* Input Area */}
         <footer className="flex-none bg-white border-t border-slate-200 p-4 pb-6 sm:pb-4">
           <div className="max-w-4xl mx-auto relative flex items-center">
             <input
@@ -182,7 +215,7 @@ const App: React.FC = () => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-              placeholder="¿Qué estás buscando?"
+              placeholder="Pregúntame cualquier cosa..."
               disabled={isLoading}
               className="w-full bg-slate-100 text-slate-800 placeholder-slate-400 rounded-full pl-5 pr-12 py-3.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all shadow-inner text-base"
             />
@@ -196,15 +229,11 @@ const App: React.FC = () => {
           </div>
         </footer>
 
-        {/* Configuration View Overlay */}
-        {isSettingsOpen && (
-            <ConfigurationView 
-              currentSettings={settings}
-              onSave={handleSettingsSave}
-              onBack={() => setIsSettingsOpen(false)}
-              onClearHistory={handleClearHistory}
-            />
-        )}
+        <SettingsModal 
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            onClearHistory={handleClearHistory}
+        />
       </div>
     </div>
   );

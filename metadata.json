@@ -1,5 +1,5 @@
 {
-  "name": "ShopScout",
-  "description": "Asistente virtual de e-commerce minimalista. Busca productos, compara precios y verifica disponibilidad utilizando Gemini AI y Google Search Grounding.",
+  "name": "Scout AI",
+  "description": "Un asistente de búsqueda conversacional que utiliza IA para explorar Internet, encontrar productos y responder preguntas, citando siempre sus fuentes.",
   "requestFramePermissions": []
 }
