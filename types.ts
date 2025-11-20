@@ -26,10 +26,12 @@ export interface Message {
 export interface AppSettings {
   targetDomain: string; // e.g., "amazon.com.mx" or "mercadolibre.com.mx"
   useMockData: boolean; // Toggle between real Gemini API and mock for testing UI
+  xmlCatalog?: string | null; // Stores the structured XML of the scraped site
 }
 
 export interface SiteScrapeResult {
   siteName: string;
   productCount: number; // Estimated or found count
   success: boolean;
+  xml?: string; // The generated XML content
 }

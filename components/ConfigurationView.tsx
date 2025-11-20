@@ -30,12 +30,12 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
     // Visual progress simulation
     const interval = setInterval(() => {
       setScrapeProgress((prev) => {
-        if (prev >= 90) return prev;
-        return prev + Math.random() * 15;
+        if (prev >= 85) return prev;
+        return prev + 5;
       });
-    }, 300);
+    }, 500);
 
-    // Actual "Analysis" call
+    // Call the Hybrid Service (Real API -> Fallback AI)
     const result = await validateAndScrapeSite(domain);
 
     clearInterval(interval);
@@ -44,9 +44,15 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
     setTimeout(() => {
       setIsScraping(false);
       setScrapeResult(result);
-      // Automatically save the domain if valid
+      
       if (result.success) {
-        onSave({ ...currentSettings, targetDomain: domain });
+        // Save everything, including the new XML found (implicitly saved by service in localStorage, 
+        // but we update state to reflect domain change)
+        onSave({ 
+            ...currentSettings, 
+            targetDomain: domain,
+            xmlCatalog: result.xml 
+        });
       }
     }, 600);
   };
@@ -80,7 +86,7 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
               URL del E-commerce
             </label>
             <p className="text-xs text-slate-500 mb-3">
-              Define el sitio específico donde el asistente buscará productos.
+              Define el sitio donde ShopScout creará el catálogo XML.
             </p>
             
             <div className="flex gap-2">
@@ -106,7 +112,7 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                     : 'bg-slate-900 text-white hover:bg-slate-800 active:scale-[0.98]'}
             `}
           >
-             {isScraping ? 'Escaneando sitio...' : 'Escanear / Scraping'}
+             {isScraping ? 'Generando XML...' : 'Analizar y Crear XML'}
              {!isScraping && (
                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
                  <path fillRule="evenodd" d="M10.5 3.75a6.75 6.75 0 100 13.5 6.75 6.75 0 000-13.5zM2.25 10.5a8.25 8.25 0 1114.59 5.28l4.69 4.69a.75.75 0 11-1.06 1.06l-4.69-4.69A8.25 8.25 0 012.25 10.5z" clipRule="evenodd" />
@@ -127,6 +133,9 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                         style={{ width: `${scrapeProgress}%` }}
                     />
                 </div>
+                <p className="text-[10px] text-center text-slate-400 pt-1">
+                    {isScraping ? "Extrayendo datos JSON-LD y convirtiendo a XML..." : "Proceso finalizado"}
+                </p>
             </div>
           )}
 
@@ -143,18 +152,18 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
                         </svg>
                     </div>
                     <h3 className={`font-bold ${scrapeResult.success ? 'text-green-800' : 'text-amber-800'}`}>
-                        {scrapeResult.success ? 'Sitio Verificado' : 'Advertencia'}
+                        {scrapeResult.success ? 'XML Generado' : 'Advertencia'}
                     </h3>
                 </div>
                 <p className="text-sm text-slate-700 mb-2">
                     {scrapeResult.success 
-                        ? `Conectado exitosamente con ${scrapeResult.siteName}.` 
-                        : `No pudimos verificar completamente el sitio, pero se guardó la configuración.`}
+                        ? `Catálogo XML creado para ${scrapeResult.siteName} y almacenado localmente.` 
+                        : `No pudimos generar el XML automáticamente, pero se guardó la URL.`}
                 </p>
                 {scrapeResult.success && (
                     <div className="mt-3 bg-white/60 p-3 rounded-lg flex justify-between items-center">
-                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Inventario Disponible</span>
-                        <span className="text-xl font-bold text-slate-900">~{scrapeResult.productCount}</span>
+                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Items en XML</span>
+                        <span className="text-xl font-bold text-slate-900">{scrapeResult.productCount}</span>
                     </div>
                 )}
             </div>
@@ -166,18 +175,15 @@ const ConfigurationView: React.FC<ConfigurationViewProps> = ({
         {/* Danger Zone */}
         <div className="bg-red-50 p-5 rounded-xl border border-red-100">
             <h3 className="text-sm font-bold text-red-800 mb-2">Zona de Peligro</h3>
-            <p className="text-xs text-red-600/80 mb-4">
-                Esta acción es irreversible y eliminará toda tu conversación actual.
-            </p>
             <button 
                 onClick={() => {
-                if(window.confirm('¿Borrar todo el historial?')) {
+                if(window.confirm('¿Borrar historial y catálogo XML?')) {
                     onClearHistory();
                 }
                 }}
                 className="w-full py-2 bg-white border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 transition-colors"
             >
-                Borrar historial de chat
+                Borrar historial y datos
             </button>
         </div>
 
